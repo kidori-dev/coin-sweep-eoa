@@ -2,7 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
 
 import { TransactionStatus } from '../../transactions/entities/transaction.entity';
-import { SweepAsset } from '../sweep.service';
+import { SweepAsset } from '../sweep.types';
 
 export class SweepRequestDto {
   @ApiPropertyOptional({
@@ -87,6 +87,9 @@ export class SweepSummaryResponseDto {
 
   @ApiProperty({ description: '검사한 입금주소 수' })
   scanned!: number;
+
+  @ApiProperty({ description: 'scan_run 행 id' })
+  runId!: string | null;
 
   @ApiProperty({ type: [SweepItemResponseDto] })
   items!: SweepItemResponseDto[];

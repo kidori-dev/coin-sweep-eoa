@@ -3,56 +3,26 @@ import { ConfigService } from '@nestjs/config';
 import { UserWalletsService } from '../user-wallets/user-wallets.service';
 import { formatUnits } from '../user-wallets/units';
 import { UserWallet } from '../user-wallets/entities/user-wallet.entity';
+import { ScanScope } from '../scan/entities/scan-cursor.entity';
+import { ScanTrigger } from '../scan/entities/scan-run.entity';
+import { ScanRunService } from '../scan/scan-run.service';
 import { HdWalletService } from '../tron/hd-wallet.service';
 import { AccountResources, TronService } from '../tron/tron.service';
 import { TransactionStatus, TransactionType } from '../transactions/entities/transaction.entity';
 import { TransactionsService } from '../transactions/transactions.service';
-
-export enum SweepAsset {
-  TRX = 'TRX',
-  TOKEN = 'TOKEN',
-}
-
-export const NATIVE_TRX = 'TRX';
+import {
+  ManualSweepOptions,
+  NATIVE_TRX,
+  SweepAsset,
+  SweepItem,
+  SweepItemView,
+  SweepOptions,
+  SweepSummary,
+} from './sweep.types';
 
 const TRX_TRANSFER_BANDWIDTH = 300;
 const TOKEN_TRANSFER_BANDWIDTH = 350;
 const BANDWIDTH_FEE_SUN = 300_000n;
-
-export interface SweepOptions {
-  dryRun?: boolean;
-}
-
-export interface ManualSweepOptions {
-  contract: string;
-  address: string;
-  dryRun?: boolean;
-}
-
-export interface SweepItem {
-  address: string;
-  asset: SweepAsset;
-  contract: string | null;
-  amount: string;
-  amountFormatted?: string;
-  symbol?: string;
-  status: TransactionStatus;
-  txid?: string;
-  feeStrategy?: string;
-  feeTxid?: string;
-  error?: string;
-  reason?: string;
-}
-
-export type SweepItemView = SweepItem & { amountFormatted: string; symbol: string };
-
-export interface SweepSummary {
-  dryRun: boolean;
-  mainAddress: string;
-  contract: string;
-  scanned: number;
-  items: SweepItemView[];
-}
 
 @Injectable()
 export class SweepService {
@@ -63,6 +33,7 @@ export class SweepService {
     private readonly deposits: UserWalletsService,
     private readonly hdWallet: HdWalletService,
     private readonly tron: TronService,
+    private readonly runs: ScanRunService,
     private readonly config: ConfigService,
   ) {}
 
@@ -73,29 +44,45 @@ export class SweepService {
     const dryRun = options.dryRun ?? false;
 
     const targets = await this.deposits.findActive();
+    // 집금은 체인 잔액을 직접 읽으므로 커서가 없다. 실행 이력만 남겨서
+    // 배치가 중간에 죽었는지(running 으로 남는다), 몇 건이 실패했는지를 볼 수 있게 한다.
+    const run = await this.runs.start({
+      scope: ScanScope.SWEEP,
+      trigger: options.trigger ?? ScanTrigger.API,
+      dryRun,
+      contract,
+    });
 
     const items: SweepItem[] = [];
-    for (const target of targets) {
-      const balance = await this.tron.getTokenBalance(target.address, contract);
-      if (balance >= minToken) {
-        items.push(await this.sweepToken(target, main.address, balance, contract, dryRun));
-      } else if (balance > 0n) {
-        items.push({
-          address: target.address,
-          asset: SweepAsset.TOKEN,
-          contract,
-          amount: balance.toString(),
-          status: TransactionStatus.SKIPPED,
-          reason: `최소 집금액 미만 (min ${minToken})`,
-        });
+    try {
+      for (const target of targets) {
+        const balance = await this.tron.getTokenBalance(target.address, contract);
+        if (balance >= minToken) {
+          items.push(await this.sweepToken(target, main.address, balance, contract, dryRun));
+        } else if (balance > 0n) {
+          items.push({
+            address: target.address,
+            asset: SweepAsset.TOKEN,
+            contract,
+            amount: balance.toString(),
+            status: TransactionStatus.SKIPPED,
+            reason: `최소 집금액 미만 (min ${minToken})`,
+          });
+        }
       }
+    } catch (err) {
+      await this.runs.fail(run.id, (err as Error).message, this.countRun(targets.length, items));
+      throw err;
     }
+
+    await this.finishRun(run.id, targets.length, items);
 
     return {
       dryRun,
       mainAddress: main.address,
       contract,
       scanned: targets.length,
+      runId: run.id,
       items: await this.decorate(items),
     };
   }
@@ -105,18 +92,56 @@ export class SweepService {
     const dryRun = options.dryRun ?? false;
     const target = await this.deposits.findByAddressOrFail(options.address);
 
-    const item =
-      options.contract === NATIVE_TRX
-        ? await this.sweepTrxAll(target, main.address, dryRun)
-        : await this.sweepTokenAll(target, main.address, options.contract, dryRun);
+    const run = await this.runs.start({
+      scope: ScanScope.SWEEP,
+      trigger: options.trigger ?? ScanTrigger.API,
+      dryRun,
+      contract: options.contract === NATIVE_TRX ? null : options.contract,
+    });
+
+    let item: SweepItem;
+    try {
+      item =
+        options.contract === NATIVE_TRX
+          ? await this.sweepTrxAll(target, main.address, dryRun)
+          : await this.sweepTokenAll(target, main.address, options.contract, dryRun);
+    } catch (err) {
+      await this.runs.fail(run.id, (err as Error).message, this.countRun(1, []));
+      throw err;
+    }
+
+    await this.finishRun(run.id, 1, [item]);
 
     return {
       dryRun,
       mainAddress: main.address,
       contract: options.contract,
       scanned: 1,
+      runId: run.id,
       items: await this.decorate([item]),
     };
+  }
+
+  private countRun(walletsScanned: number, items: SweepItem[]) {
+    return {
+      walletsScanned,
+      found: items.length,
+      applied: items.filter((item) => item.status === TransactionStatus.SUCCESS).length,
+      failed: items.filter((item) => item.status === TransactionStatus.FAILED).length,
+    };
+  }
+
+  private async finishRun(runId: string, walletsScanned: number, items: SweepItem[]) {
+    const counts = this.countRun(walletsScanned, items);
+    if (counts.failed > 0) {
+      const reasons = items
+        .filter((item) => item.status === TransactionStatus.FAILED)
+        .map((item) => `${item.address}: ${item.error ?? '알 수 없음'}`)
+        .join('\n');
+      await this.runs.fail(runId, `${counts.failed}건 집금 실패\n${reasons}`, counts);
+      return;
+    }
+    await this.runs.finish(runId, counts);
   }
 
   private async describeAsset(

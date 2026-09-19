@@ -41,4 +41,8 @@ export const envValidationSchema = Joi.object({
   TRON_ACTIVATION_SUN: Joi.number().default(100000),
   TRON_MIN_SWEEP_TOKEN: Joi.number().default(5000000),
   TRON_FEE_LIMIT_SUN: Joi.number().default(100000000),
+
+  SCAN_CONFIRM_LAG_MS: Joi.number().min(0).default(60000),
+  SCAN_PAGE_LIMIT: Joi.number().min(1).max(200).default(200),
+  SCAN_STALE_RUN_MS: Joi.number().min(0).default(600000),
 });

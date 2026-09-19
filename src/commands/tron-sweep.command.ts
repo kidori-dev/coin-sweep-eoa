@@ -2,7 +2,9 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Command, CommandRunner, Option } from 'nest-commander';
 
-import { NATIVE_TRX, SweepService, SweepSummary } from '../modules/sweep/sweep.service';
+import { ScanTrigger } from '../modules/scan/entities/scan-run.entity';
+import { SweepService } from '../modules/sweep/sweep.service';
+import { NATIVE_TRX, SweepSummary } from '../modules/sweep/sweep.types';
 import { HdWalletService } from '../modules/tron/hd-wallet.service';
 import { TronService } from '../modules/tron/tron.service';
 
@@ -12,6 +14,7 @@ function render(summary: SweepSummary): string {
     `main wallet: ${summary.mainAddress}`,
     `contract   : ${summary.contract}`,
     `scanned    : ${summary.scanned}`,
+    `run id     : ${summary.runId ?? '-'}`,
   ];
 
   if (summary.items.length === 0) {
@@ -46,7 +49,10 @@ export class TronSweepCommand extends CommandRunner {
   }
 
   async run(_params: string[], options: SweepCommandOptions): Promise<void> {
-    const summary = await this.sweep.sweepAll({ dryRun: options.dryRun ?? false });
+    const summary = await this.sweep.sweepAll({
+      dryRun: options.dryRun ?? false,
+      trigger: ScanTrigger.CLI,
+    });
     this.logger.log(render(summary));
   }
 
@@ -80,6 +86,7 @@ export class TronManualSweepCommand extends CommandRunner {
       contract: options.contract,
       address: options.address,
       dryRun: options.dryRun ?? false,
+      trigger: ScanTrigger.CLI,
     });
     this.logger.log(render(summary));
   }

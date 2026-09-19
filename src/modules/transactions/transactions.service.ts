@@ -129,13 +129,4 @@ export class TransactionsService {
       createdAt: row.createdAt,
     }));
   }
-
-  lastBlockTimestamp(userWalletId: string): Promise<{ max: Date | null } | undefined> {
-    return this.repo
-      .createQueryBuilder('t')
-      .select('MAX(t.blockTimestamp)', 'max')
-      .where('t.userWalletId = :userWalletId', { userWalletId })
-      .andWhere('t.type = :type', { type: TransactionType.DEPOSIT })
-      .getRawOne<{ max: Date | null }>();
-  }
 }

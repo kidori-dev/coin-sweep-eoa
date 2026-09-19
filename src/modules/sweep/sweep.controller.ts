@@ -8,6 +8,7 @@ import {
 } from '@nestjs/swagger';
 
 import { SESSION_AUTH } from '../../swagger.setup';
+import { ScanTrigger } from '../scan/entities/scan-run.entity';
 import { ManualSweepRequestDto, SweepRequestDto, SweepSummaryResponseDto } from './dto/sweep.dto';
 import { SweepService } from './sweep.service';
 
@@ -26,7 +27,7 @@ export class SweepController {
   })
   @ApiOkResponse({ type: SweepSummaryResponseDto })
   run(@Body() dto: SweepRequestDto): Promise<SweepSummaryResponseDto> {
-    return this.sweep.sweepAll({ dryRun: dto.dryRun });
+    return this.sweep.sweepAll({ dryRun: dto.dryRun, trigger: ScanTrigger.API });
   }
 
   @Post('manual')
@@ -40,6 +41,6 @@ export class SweepController {
   @ApiOkResponse({ type: SweepSummaryResponseDto })
   @ApiBadRequestResponse({ description: 'address / userRef 미지정, 또는 대상 없음' })
   runManual(@Body() dto: ManualSweepRequestDto): Promise<SweepSummaryResponseDto> {
-    return this.sweep.sweepManual(dto);
+    return this.sweep.sweepManual({ ...dto, trigger: ScanTrigger.API });
   }
 }

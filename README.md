@@ -81,6 +81,10 @@ docker compose -f docker-compose.prod.yml run --rm api npm run migration:run:pro
 
 응답 DTO는 엔티티를 그대로 내보내지 않도록 `static from(entity)` 로 변환한다.
 
+**타입** — 서비스 안팎에서 주고받는 인터페이스는 서비스 파일에 두지 말고 모듈의 `*.types.ts` 로 뺀다
+(`scan.types.ts`, `watcher.types.ts`, `sweep.types.ts`). 서비스 파일에는 클래스와 그 파일에서만 쓰는
+상수만 남긴다. HTTP 경계에서 쓰는 모양은 `*.types.ts` 가 아니라 `dto/` 의 DTO 클래스다.
+
 **가드** — 기본값이 "전 라우트 로그인 필수"(`AuthenticatedGuard` 가 전역).
 공개는 `@Public()`, 권한은 `@Roles(AdminRole.SUPER_ADMIN)`, 현재 어드민은 `@CurrentAdmin()`.
 
@@ -104,8 +108,8 @@ docker compose exec api npm run cli -- tron:sweep             # 실행
 
 집금 기준액은 `TRON_MIN_SWEEP_TOKEN` 이다(기본 5 USDT). 그 미만은 그대로 두고, 필요하면 수동 집금으로 가져온다.
 
-집금은 체인에서 자산을 옮기기만 한다. 잔고 회계는 하지 않으며, 결과는 `sweep_logs` 와
-`user_wallet.last_swept_at` 에만 남는다.
+집금은 체인에서 자산을 옮기기만 한다. 잔고 회계는 하지 않으며, 결과는 `transactions`(`type=sweep`) 와
+`user_wallet.last_swept_at` 에 남고 실행 자체는 `scan_run`(`scope=sweep`) 에 남는다.
 
 ### 금액 표기
 
@@ -159,19 +163,63 @@ USDT 컨트랙트로 들어온 **입금만** 찾아서 `user_wallet.usdt_amount`
 ```bash
 npm run cli -- tron:watch --dry-run     # DB 를 바꾸지 않고 감지 결과만
 npm run cli -- tron:watch               # 반영
-npm run cli -- tron:watch -s 1790000000000   # 이 시각(ms) 이후만
 ```
 
-`POST /api/watcher/scan` 으로도 같은 일을 하고, `GET /api/watcher/deposits` 로 감지 내역을 본다.
+`POST /api/watcher/scan` 으로도 같은 일을 하고, `GET /api/transactions?type=deposit` 로 감지 내역을 본다.
 
 동작 방식:
 
-- 지갑별로 `transactions` 의 마지막 `block_timestamp` 부터 TronGrid 의 TRC20 입금 내역을 읽는다.
-- 감지한 입금은 `transactions` 에 기록하고, **같은 DB 트랜잭션 안에서** `usdt_amount` 를 올린다.
-  `(txid, user_wallet_id)` 유니크라 두 번 돌려도 중복 반영되지 않는다.
-- 커서는 일부러 겹치게 잡는다. 같은 블록에 입금이 여러 건 들어와도 놓치지 않기 위해서다.
+- 지갑별로 `scan_cursor.scanned_through_at` 부터 **`지금 - SCAN_CONFIRM_LAG_MS`** 까지 TronGrid 의
+  TRC20 입금 내역을 읽는다. 버퍼 안쪽(너무 최근)의 전송은 `pending` 으로 두고 다음 실행에서 처리한다.
+- 감지한 입금은 `transactions` 에 기록하고, **같은 DB 트랜잭션 안에서** `usdt_amount` 를 올리고
+  커서를 전진시킨다. 셋이 함께 커밋되므로 커서만 앞서 나가 입금이 새는 창이 없다.
+- `(txid, user_wallet_id)` 유니크라 커서를 되감아 같은 구간을 다시 훑어도 중복 반영되지 않는다.
+- 한 지갑의 조회가 실패하면 그 지갑의 커서만 두고 나머지를 계속 훑는다. 실패는 `scan_cursor.last_error`
+  와 `scan_run` 에 남고, 다음 실행이 같은 구간을 재시도한다.
 
 아직 스케줄러는 붙이지 않았다. 주기 실행이 필요하면 `@nestjs/schedule` 의 `@Cron` 으로 `scan()` 을 부르면 된다.
+
+### scan_cursor — "여기까지 조회 완료"
+
+"어디까지 봤는지" 를 결과 테이블에서 유추하지 않고 따로 들고 있는다. `transactions` 의
+`MAX(block_timestamp)` 로 커서를 대신하면 ① 입금이 한 건도 없는 지갑은 영원히 생성 시각부터 다시
+조회하게 되고 ② 토큰을 하나 더 붙이면 새 토큰의 커서가 USDT 커서로 점프해 과거 입금을 영영 놓친다.
+
+| 컬럼 | 의미 |
+| --- | --- |
+| `scope` | `deposit` / `sweep` |
+| `user_wallet_id` / `contract` | 커서의 대상. 둘 다 null 이면 전역, `contract` 가 null 이면 네이티브 TRX |
+| `scanned_through_at` | **이 시각까지는 빠짐없이 조회했다.** 다음 조회의 `min_timestamp` |
+| `last_seen_txid` | 경계에 걸친 마지막 tx (커서가 inclusive 라 한 건은 늘 재수신된다) |
+| `truncated` | `SCAN_PAGE_LIMIT` 에 걸려 남은 구간이 있다. 커서를 끝까지 밀지 않고 다음 실행이 이어받는다 |
+| `last_run_at` / `last_success_at` / `last_error` | 지연·실패 감시용 |
+
+`(scope, user_wallet_id, contract)` 유니크(`NULLS NOT DISTINCT`)라 대상당 한 행만 존재한다.
+
+```bash
+npm run cli -- tron:cursor                                  # 커서 + 최근 실행 이력
+npm run cli -- tron:cursor-rewind -t 2026-09-01T00:00:00Z   # 전체 되감기
+npm run cli -- tron:cursor-rewind -t 2026-09-01T00:00:00Z -a TGvDe...   # 한 주소만
+```
+
+되감기는 그 구간을 **다시 조회**할 뿐이고, 이미 기록된 입금은 `(txid, user_wallet_id)` 유니크에 막혀
+잔고를 다시 올리지 않는다. 다만 그 구간에 **아직 기록된 적 없는** 입금이 있으면 그건 새로 반영된다.
+
+### scan_run — 실행 이력
+
+실행 1회당 한 행. 결과 행만 봐서는 "입금이 없었다" 와 "워처가 죽어 있었다" 가 구분되지 않는다.
+
+| 컬럼 | 의미 |
+| --- | --- |
+| `scope` / `trigger` / `dry_run` | `deposit`·`sweep`, `api`·`cli`, dry-run 여부 |
+| `status` | `running` / `success` / `failed`. **`running` 인 채로 오래 남아 있으면 프로세스가 죽은 것** |
+| `window_from` ~ `window_to` | 이번 실행이 다룬 구간 (집금은 커서가 없어 비어 있다) |
+| `wallets_scanned` / `found` / `applied` / `pending` / `failed` | 건수 |
+| `error` | 실패 사유 (지갑별 사유를 모아 담는다) |
+| `started_at` / `finished_at` | 실행 시각 |
+
+입금 스캔은 `dryRun` 이면 아무것도 쓰지 않으므로 `scan_run` 에도 남지 않는다. 집금은 dry-run 도 남긴다.
+집금에는 커서가 없다 — 체인 잔액을 직접 읽으므로 되감을 지점이 없고, 실행 이력만 남긴다.
 
 ### transactions
 
@@ -212,6 +260,9 @@ npm run cli -- tron:stake -a 200          # delegate 전략용 TRX 스테이킹
 | POST | `/api/sweeps` | 모든 유저의 USDT 집금 (`{ "dryRun": true }` 지원) |
 | POST | `/api/sweeps/manual` | 수동 집금 (`{ "contract", "address", "dryRun" }`) |
 | POST | `/api/watcher/scan` | 입금 감지 1회 실행 |
+| GET | `/api/scans/cursors` | 스캔 커서 목록 (`scope`) |
+| POST | `/api/scans/cursors/rewind` | 커서 강제 되감기 (`{ "to", "address", "contract", "scope" }`) |
+| GET | `/api/scans/runs` | 실행 이력 (`scope`, `status`, `limit`) |
 | GET | `/api/transactions` | 입금·집금 내역 (`limit`, `userWalletId`, `type`) |
 
 ### 수수료 전략 (`TRON_FEE_STRATEGY`)

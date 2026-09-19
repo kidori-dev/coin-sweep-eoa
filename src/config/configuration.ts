@@ -45,6 +45,11 @@ export interface AppConfig {
     minSweepToken: number;
     feeLimitSun: number;
   };
+  scan: {
+    confirmLagMs: number;
+    pageLimit: number;
+    staleRunMs: number;
+  };
 }
 
 export default (): AppConfig => ({
@@ -98,5 +103,10 @@ export default (): AppConfig => ({
     activationSun: parseInt(process.env.TRON_ACTIVATION_SUN ?? '100000', 10),
     minSweepToken: parseInt(process.env.TRON_MIN_SWEEP_TOKEN ?? '5000000', 10),
     feeLimitSun: parseInt(process.env.TRON_FEE_LIMIT_SUN ?? '100000000', 10),
+  },
+  scan: {
+    confirmLagMs: parseInt(process.env.SCAN_CONFIRM_LAG_MS ?? '60000', 10),
+    pageLimit: parseInt(process.env.SCAN_PAGE_LIMIT ?? '200', 10),
+    staleRunMs: parseInt(process.env.SCAN_STALE_RUN_MS ?? '600000', 10),
   },
 });

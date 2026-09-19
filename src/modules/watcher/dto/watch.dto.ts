@@ -38,6 +38,11 @@ export class WatchedDepositResponseDto {
 
   @ApiProperty({ description: 'usdt_amount 에 반영되었는지. 이미 처리한 입금이면 false' })
   applied!: boolean;
+
+  @ApiProperty({
+    description: '확정 지연 버퍼 안쪽이라 이번엔 미뤘다. 다음 스캔에서 반영된다',
+  })
+  pending!: boolean;
 }
 
 export class WatchSummaryResponseDto {
@@ -58,6 +63,35 @@ export class WatchSummaryResponseDto {
 
   @ApiProperty({ description: '잔고에 반영된 건수' })
   applied!: number;
+
+  @ApiProperty({ description: '확정 지연 버퍼에 걸려 다음 스캔으로 미룬 건수' })
+  pending!: number;
+
+  @ApiProperty({
+    description: '조회에 실패한 지갑 수. 커서가 전진하지 않아 다음 스캔이 재시도한다',
+  })
+  failed!: number;
+
+  @ApiProperty({ description: '조회 limit 에 걸려 남은 구간이 있는 지갑 수' })
+  truncated!: number;
+
+  @ApiProperty({
+    nullable: true,
+    format: 'date-time',
+    type: String,
+    description: '이번 스캔이 훑은 구간의 시작 (커서 중 가장 뒤처진 것)',
+  })
+  windowFrom!: Date | null;
+
+  @ApiProperty({ format: 'date-time', description: '이번 스캔이 조회 완료로 간주한 경계' })
+  windowTo!: Date;
+
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    description: 'scan_run 행 id. dryRun 이면 기록하지 않으므로 null',
+  })
+  runId!: string | null;
 
   @ApiProperty({ type: [WatchedDepositResponseDto] })
   deposits!: WatchedDepositResponseDto[];

@@ -10,7 +10,9 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { AdminsModule } from './modules/admins/admins.module';
 import { AuthModule } from './modules/auth/auth.module';
-import { DepositAddressesModule } from './modules/deposit-addresses/deposit-addresses.module';
+import { UserWalletsModule } from './modules/user-wallets/user-wallets.module';
+import { TransactionsModule } from './modules/transactions/transactions.module';
+import { WatcherModule } from './modules/watcher/watcher.module';
 import { SweepModule } from './modules/sweep/sweep.module';
 import { TronModule } from './modules/tron/tron.module';
 
@@ -35,8 +37,10 @@ import { TronModule } from './modules/tron/tron.module';
     AuthModule,
     AdminsModule,
     TronModule,
-    DepositAddressesModule,
+    UserWalletsModule,
     SweepModule,
+    TransactionsModule,
+    WatcherModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

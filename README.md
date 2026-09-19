@@ -92,17 +92,127 @@ DTO 필드에 `@ApiProperty`. `SWAGGER_ENABLED` 미지정 시 production 에서�
 메인지갑과 모든 입금주소를 **니모닉 하나에서 HD 파생**한다(`m/44'/195'/0'/0/{index}`). DB 에는 주소와 인덱스만
 저장하고 개인키는 저장하지 않는다. 집금할 때만 메모리에서 파생한다. index 0 은 메인지갑, 1 부터 입금주소.
 
+### 자동 집금 — 모든 유저의 USDT
+
+`TRON_MIN_SWEEP_TOKEN` 이상을 가진 **모든 유저 지갑의 USDT** 를 메인지갑으로 모은다.
+대상 토큰은 `TRON_TOKEN_CONTRACT` 하나뿐이고, TRX 나 다른 TRC20 은 **건드리지 않는다.**
+
 ```bash
-docker compose exec api npm run cli -- tron:info            # 네트워크/메인지갑 상태
-docker compose exec api npm run cli -- tron:issue -c 3      # 입금주소 3개 발급
-docker compose exec api npm run cli -- tron:balance         # 전체 입금주소 잔액
-docker compose exec api npm run cli -- tron:sweep --dry-run # 집금 대상만 계산
-docker compose exec api npm run cli -- tron:sweep           # 실제 집금
-docker compose exec api npm run cli -- tron:stake -a 200    # delegate 전략용 TRX 스테이킹
+docker compose exec api npm run cli -- tron:sweep --dry-run   # 대상만 계산
+docker compose exec api npm run cli -- tron:sweep             # 실행
 ```
 
-API 로도 같은 일을 한다: `POST /api/deposit-addresses`, `GET /api/deposit-addresses`,
-`GET /api/deposit-addresses/:id/balance`, `POST /api/sweeps`, `GET /api/sweeps/logs`.
+집금 기준액은 `TRON_MIN_SWEEP_TOKEN` 이다(기본 5 USDT). 그 미만은 그대로 두고, 필요하면 수동 집금으로 가져온다.
+
+집금은 체인에서 자산을 옮기기만 한다. 잔고 회계는 하지 않으며, 결과는 `sweep_logs` 와
+`user_wallet.last_swept_at` 에만 남는다.
+
+### 금액 표기
+
+체인이 정수로만 다루므로 DB 에도 **최소 단위 정수**로 저장한다(USDT decimals=6 → `8000000` = 8 USDT).
+`numeric(38,0)` 이라 소수점 자리는 없지만 값이 잘리는 것은 아니다.
+토큰을 바꿔 decimals 가 달라져도 스키마를 건드릴 필요가 없다.
+
+API 응답은 어디서든 원값과 표시용 값을 함께 준다.
+
+```json
+// 입금주소
+{ "usdtAmount": "12345678", "usdtAmountFormatted": "12.345678", "usdtSymbol": "USDT" }
+
+// 집금 결과 / 집금 이력
+{ "asset": "TOKEN", "amount": "8000000", "amountFormatted": "8.000000", "symbol": "USDT" }
+```
+
+`decimals` 는 컨트랙트에서 읽어 캐시하므로, 토큰을 바꾸면 표시 값도 자동으로 따라간다.
+TRX 는 decimals 6 으로 고정 처리한다.
+
+### user_wallet
+
+입금주소를 담는 테이블. `usdt_amount` 는 **DB 가 들고 있는 USDT 잔고**로, 입금 와쳐가 올려준다.
+집금은 이 값을 건드리지 않는다.
+
+| 컬럼 | 의미 |
+| --- | --- |
+| `address` / `derivation_index` | 입금주소와 HD 파생 인덱스 |
+| `user_ref` | 서비스 쪽 사용자 식별자 |
+| `usdt_amount` | DB 가 관리하는 USDT 잔고 (와쳐가 갱신) |
+| `last_swept_at` | 마지막 집금 시각 |
+
+### 수동 집금 — 컨트랙트 + 주소
+
+잘못 입금된 토큰이나 남은 TRX 를 회수할 때 쓴다. 컨트랙트 주소와 지갑 주소를 지정하면
+**최소 집금액을 무시하고 잔액 전부**를 가져온다.
+
+```bash
+npm run cli -- tron:sweep-manual -c <TRC20 컨트랙트> -a TGvDe...
+npm run cli -- tron:sweep-manual -c TRX -a TGvDe...          # 네이티브 TRX
+```
+
+```bash
+curl -b cookie.txt -X POST http://localhost:3000/api/sweeps/manual   -H 'Content-Type: application/json'   -d '{"contract":"TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf","address":"TGvDe..."}'
+```
+
+### 입금 와쳐
+
+USDT 컨트랙트로 들어온 **입금만** 찾아서 `user_wallet.usdt_amount` 를 올린다. 집금과는 무관하게 돈다.
+
+```bash
+npm run cli -- tron:watch --dry-run     # DB 를 바꾸지 않고 감지 결과만
+npm run cli -- tron:watch               # 반영
+npm run cli -- tron:watch -s 1790000000000   # 이 시각(ms) 이후만
+```
+
+`POST /api/watcher/scan` 으로도 같은 일을 하고, `GET /api/watcher/deposits` 로 감지 내역을 본다.
+
+동작 방식:
+
+- 지갑별로 `transactions` 의 마지막 `block_timestamp` 부터 TronGrid 의 TRC20 입금 내역을 읽는다.
+- 감지한 입금은 `transactions` 에 기록하고, **같은 DB 트랜잭션 안에서** `usdt_amount` 를 올린다.
+  `(txid, user_wallet_id)` 유니크라 두 번 돌려도 중복 반영되지 않는다.
+- 커서는 일부러 겹치게 잡는다. 같은 블록에 입금이 여러 건 들어와도 놓치지 않기 위해서다.
+
+아직 스케줄러는 붙이지 않았다. 주기 실행이 필요하면 `@nestjs/schedule` 의 `@Cron` 으로 `scan()` 을 부르면 된다.
+
+### transactions
+
+**입금과 집금을 한 테이블에** 담는다. "어떤 토큰을 누가 누구에게 얼마" 를 그대로 남긴다.
+
+| 컬럼 | 의미 |
+| --- | --- |
+| `type` | `deposit`(와쳐가 잡은 입금) / `sweep`(집금) |
+| `status` | `success` / `failed` / `skipped` |
+| `address` | 대상 유저 지갑 주소 |
+| `contract` / `token_symbol` / `token_decimals` | 토큰 메타. `contract` 가 null 이면 네이티브 TRX |
+| `txid` | 트랜잭션 해시. 실패·스킵된 집금은 null |
+| `from_address` → `to_address` | 입금이면 `보낸사람 → 우리지갑`, 집금이면 `우리지갑 → 메인지갑` |
+| `amount` | 최소 단위 금액 |
+| `fee_strategy` / `fee_txid` | 집금에서 쓴 수수료 방식과 그 트랜잭션 |
+| `error` | 실패 사유 |
+| `block_timestamp` | 체인에 포함된 시각 (입금만 채워짐) |
+
+`(txid, user_wallet_id)` 유니크가 입금 중복 반영을 막는 장치다.
+조회는 `GET /api/transactions?type=deposit|sweep` 하나로 한다.
+
+### 그 밖의 커맨드
+
+```bash
+npm run cli -- tron:info                  # 네트워크/메인지갑 상태
+npm run cli -- tron:issue -c 3 -u user-1  # 입금주소 발급
+npm run cli -- tron:balance               # 입금주소 잔액 + 누적입금
+npm run cli -- tron:stake -a 200          # delegate 전략용 TRX 스테이킹
+```
+
+### API
+
+| 메서드 | 경로 | 설명 |
+| --- | --- | --- |
+| POST | `/api/user-wallets` | 입금주소 발급 (`{ "userRef": "user-1024" }`) |
+| GET | `/api/user-wallets` | 목록 |
+| GET | `/api/user-wallets/:id/balance` | 체인 잔액 조회 |
+| POST | `/api/sweeps` | 모든 유저의 USDT 집금 (`{ "dryRun": true }` 지원) |
+| POST | `/api/sweeps/manual` | 수동 집금 (`{ "contract", "address", "dryRun" }`) |
+| POST | `/api/watcher/scan` | 입금 감지 1회 실행 |
+| GET | `/api/transactions` | 입금·집금 내역 (`limit`, `userWalletId`, `type`) |
 
 ### 수수료 전략 (`TRON_FEE_STRATEGY`)
 
@@ -114,10 +224,25 @@ TRC20 전송에는 energy 가 필요한데, 입금주소에는 보통 TRX 가 �
 | `transfer` | 메인지갑이 입금주소로 TRX 를 보내 수수료를 대게 함 | 집금 1건마다 TRX 소모 |
 
 `delegate` 를 쓰려면 먼저 `tron:stake` 로 메인지갑에 energy 를 확보해야 한다.
-USDT 전송 1건에 약 30k(수신자가 이미 USDT 보유) ~ 65k(미보유) energy 가 든다.
+위임이 노드에서 거부되면 `TRON_FEE_FALLBACK=true` 일 때 자동으로 `transfer` 로 대체한다.
 
-집금 순서는 **토큰 먼저, TRX 나중**이다. TRX 를 먼저 쓸어가면 토큰 전송 수수료를 낼 수 없기 때문이다.
-TRX 는 `TRON_TRX_RESERVE_SUN` 만큼 남긴다.
+집금이 끝나면 **위임한 만큼 항상 회수한다.** 스테이크가 특정 주소에 묶이지 않고 계속 순환한다.
+
+### bandwidth 스테이킹은 하지 말 것
+
+집금 때 메인지갑이 쓰는 bandwidth 를 스테이킹으로 덮고 싶어질 수 있는데, 수지가 맞지 않는다.
+
+| | 1 TRX 스테이킹당 | 소각가 | 회수기간 |
+| --- | --- | --- | --- |
+| energy | 73.7 /일 | 100 SUN | **136일** |
+| bandwidth | 0.63 /일 | 1,000 SUN | **1,584일** |
+
+bandwidth 는 공급이 적고(432억을 684억 TRX 가 나눠 가짐) 소각가는 10배 비싸서, energy 대비 117배 비효율이다.
+bandwidth 비용을 줄이려면 스테이킹이 아니라 **메인지갑이 보내는 트랜잭션 수를 줄여야 한다**(위 `TRON_KEEP_DELEGATION`).
+
+**energy 와 별개로 bandwidth 도 필요하다.** TRC20 전송은 약 345 bandwidth 를 쓰는데, 활성 계정의
+하루 무료 할당(600)으로 보통 충분하다. 모자라면 집금 직전에 `TRON_BANDWIDTH_TOPUP_SUN` 만큼 TRX 를
+채워준다(기본 0.5 TRX). 이게 없으면 전송이 `Account resource insufficient` 로 실패한다.
 
 ### Nile 실측 데이터
 
@@ -190,8 +315,10 @@ src/
 │  ├─ auth/                # 로컬 전략, 세션 시리얼라이저, 컨트롤러, dto/
 │  ├─ admins/              # Admin 엔티티 + 서비스
 │  ├─ tron/                # TronWeb 래퍼 + HD 지갑 파생
-│  ├─ deposit-addresses/   # 입금주소 발급/조회
-│  └─ sweep/               # 집금 로직 + 이력
+│  ├─ user-wallets/        # 입금주소 발급/조회 (user_wallet 테이블)
+│  ├─ sweep/               # 집금 로직
+│  ├─ transactions/        # 입금·집금 기록 (transactions 테이블)
+│  └─ watcher/             # 입금 감지 → usdt_amount 반영
 ├─ commands/               # CLI 커맨드 + CliModule
 └─ health/                 # terminus 헬스체크
 

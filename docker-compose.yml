@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:18-alpine
+    container_name: coin-sweep-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-coin_sweep}
+      TZ: UTC
+    ports:
+      - '${DB_EXPOSED_PORT:-5432}:5432'
+    volumes:
+      # PG18 이미지는 PGDATA 가 /var/lib/postgresql/18/docker 로 바뀌었다.
+      # 버전 디렉터리를 감싸는 상위 경로를 마운트해야 데이터가 유지된다.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${DB_USERNAME:-postgres} -d ${DB_NAME:-coin_sweep}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      target: development
+    container_name: coin-sweep-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 컨테이너 안에서는 서비스 이름으로 DB 에 붙는다 (.env 값보다 우선)
+      DB_HOST: db
+      DB_PORT: 5432
+      # tsc --watch 폴링 설정은 tsconfig.json 의 watchOptions 에 있다
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - '${PORT:-3000}:3000'
+      - '9229:9229'
+    volumes:
+      - ./src:/app/src
+      - ./test:/app/test
+      - ./tsconfig.json:/app/tsconfig.json
+      - ./tsconfig.build.json:/app/tsconfig.build.json
+      - ./nest-cli.json:/app/nest-cli.json
+      # 호스트 node_modules 로 덮이지 않게 격리
+      - api_node_modules:/app/node_modules
+    entrypoint: ['sh', '/app/docker/entrypoint.dev.sh']
+    command: ['npm', 'run', 'start:dev']
+
+volumes:
+  pgdata:
+  api_node_modules:

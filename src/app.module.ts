@@ -10,6 +10,9 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { AdminsModule } from './modules/admins/admins.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { DepositAddressesModule } from './modules/deposit-addresses/deposit-addresses.module';
+import { SweepModule } from './modules/sweep/sweep.module';
+import { TronModule } from './modules/tron/tron.module';
 
 @Module({
   imports: [
@@ -31,6 +34,9 @@ import { AuthModule } from './modules/auth/auth.module';
     HealthModule,
     AuthModule,
     AdminsModule,
+    TronModule,
+    DepositAddressesModule,
+    SweepModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },

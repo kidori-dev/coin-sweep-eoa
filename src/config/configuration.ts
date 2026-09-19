@@ -29,6 +29,24 @@ export interface AppConfig {
     enabled: boolean;
     path: string;
   };
+  tron: {
+    fullHost: string;
+    apiKey: string;
+    network: string;
+    mnemonic: string;
+    hdPath: string;
+    mainIndex: number;
+    tokenContract: string;
+    feeStrategy: 'delegate' | 'transfer';
+    delegateEnergy: number;
+    feeFallback: boolean;
+    gasTopupSun: number;
+    activationSun: number;
+    trxReserveSun: number;
+    minSweepTrxSun: number;
+    minSweepToken: number;
+    feeLimitSun: number;
+  };
 }
 
 export default (): AppConfig => ({
@@ -66,5 +84,23 @@ export default (): AppConfig => ({
       ? process.env.SWAGGER_ENABLED === 'true'
       : process.env.NODE_ENV !== 'production',
     path: process.env.SWAGGER_PATH ?? 'api/docs',
+  },
+  tron: {
+    fullHost: process.env.TRON_FULL_HOST ?? 'https://nile.trongrid.io',
+    apiKey: process.env.TRON_API_KEY ?? '',
+    network: process.env.TRON_NETWORK ?? 'nile',
+    mnemonic: process.env.TRON_MNEMONIC ?? '',
+    hdPath: process.env.TRON_HD_PATH ?? "m/44'/195'/0'/0",
+    mainIndex: parseInt(process.env.TRON_MAIN_INDEX ?? '0', 10),
+    tokenContract: process.env.TRON_TOKEN_CONTRACT ?? '',
+    feeStrategy: (process.env.TRON_FEE_STRATEGY ?? 'delegate') as 'delegate' | 'transfer',
+    delegateEnergy: parseInt(process.env.TRON_DELEGATE_ENERGY ?? '40000', 10),
+    feeFallback: (process.env.TRON_FEE_FALLBACK ?? 'true') === 'true',
+    gasTopupSun: parseInt(process.env.TRON_GAS_TOPUP_SUN ?? '30000000', 10),
+    activationSun: parseInt(process.env.TRON_ACTIVATION_SUN ?? '1000000', 10),
+    trxReserveSun: parseInt(process.env.TRON_TRX_RESERVE_SUN ?? '0', 10),
+    minSweepTrxSun: parseInt(process.env.TRON_MIN_SWEEP_TRX_SUN ?? '100000', 10),
+    minSweepToken: parseInt(process.env.TRON_MIN_SWEEP_TOKEN ?? '1000000', 10),
+    feeLimitSun: parseInt(process.env.TRON_FEE_LIMIT_SUN ?? '100000000', 10),
   },
 });

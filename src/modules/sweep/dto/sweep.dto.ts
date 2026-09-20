@@ -17,7 +17,9 @@ export class SweepRequestDto {
 export class ManualSweepRequestDto {
   @ApiProperty({
     example: 'TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf',
-    description: 'TRC20 컨트랙트 주소. 네이티브 TRX 는 "TRX" 를 넣는다.',
+    description:
+      'TRC20 컨트랙트 주소. 네이티브 TRX 는 "TRX" 를 넣는다. ' +
+      'contract 테이블에 없는 주소면 체인에서 메타데이터를 읽어 자동 등록한다.',
   })
   @IsString()
   @MaxLength(64)
@@ -44,7 +46,14 @@ export class SweepItemResponseDto {
   @ApiProperty({ enum: SweepAsset })
   asset!: SweepAsset;
 
-  @ApiProperty({ nullable: true, type: String })
+  @ApiProperty({ format: 'uuid', description: 'contract 테이블 참조' })
+  contractId!: string;
+
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    description: '컨트랙트 주소. null 이면 네이티브 TRX',
+  })
   contract!: string | null;
 
   @ApiProperty({ description: '최소 단위 금액' })
@@ -82,14 +91,8 @@ export class SweepSummaryResponseDto {
   @ApiProperty({ description: '집금 목적지 (메인지갑)' })
   mainAddress!: string;
 
-  @ApiProperty({ description: '집금 대상 컨트랙트' })
-  contract!: string;
-
-  @ApiProperty({ description: '검사한 입금주소 수' })
+  @ApiProperty({ description: '검사한 (지갑 × 자산) 후보 수. 전체 지갑 수가 아니다' })
   scanned!: number;
-
-  @ApiProperty({ description: 'scan_run 행 id' })
-  runId!: string | null;
 
   @ApiProperty({ type: [SweepItemResponseDto] })
   items!: SweepItemResponseDto[];

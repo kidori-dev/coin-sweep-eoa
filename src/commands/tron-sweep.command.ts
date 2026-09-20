@@ -2,7 +2,6 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Command, CommandRunner, Option } from 'nest-commander';
 
-import { ScanTrigger } from '../modules/scan/entities/scan-run.entity';
 import { SweepService } from '../modules/sweep/sweep.service';
 import { NATIVE_TRX, SweepSummary } from '../modules/sweep/sweep.types';
 import { HdWalletService } from '../modules/tron/hd-wallet.service';
@@ -12,9 +11,7 @@ function render(summary: SweepSummary): string {
   const lines = [
     `dry-run    : ${summary.dryRun}`,
     `main wallet: ${summary.mainAddress}`,
-    `contract   : ${summary.contract}`,
-    `scanned    : ${summary.scanned}`,
-    `run id     : ${summary.runId ?? '-'}`,
+    `candidates : ${summary.scanned}`,
   ];
 
   if (summary.items.length === 0) {
@@ -22,7 +19,7 @@ function render(summary: SweepSummary): string {
   }
   for (const item of summary.items) {
     lines.push(
-      `[${item.status}] ${item.address} ${item.amountFormatted ?? item.amount} ${item.symbol ?? item.asset}` +
+      `[${item.status}] ${item.address} ${item.amountFormatted} ${item.symbol}` +
         (item.txid ? ` tx=${item.txid}` : '') +
         (item.feeTxid ? ` fee(${item.feeStrategy})=${item.feeTxid}` : '') +
         (item.reason ? ` (${item.reason})` : '') +
@@ -39,7 +36,8 @@ interface SweepCommandOptions {
 @Command({
   name: 'tron:sweep',
   description:
-    '최소 집금액 이상인 모든 유저 지갑의 USDT 를 집금한다. --dry-run 으로 먼저 확인하세요.',
+    '등록된 활성 TRC20 전부에 대해, DB 미집금 잔액이 최소 집금액 이상인 지갑을 집금한다. ' +
+    '후보 선정에 체인 호출이 없다. --dry-run 으로 먼저 확인하세요.',
 })
 export class TronSweepCommand extends CommandRunner {
   private readonly logger = new Logger(TronSweepCommand.name);
@@ -49,10 +47,7 @@ export class TronSweepCommand extends CommandRunner {
   }
 
   async run(_params: string[], options: SweepCommandOptions): Promise<void> {
-    const summary = await this.sweep.sweepAll({
-      dryRun: options.dryRun ?? false,
-      trigger: ScanTrigger.CLI,
-    });
+    const summary = await this.sweep.sweepAll({ dryRun: options.dryRun ?? false });
     this.logger.log(render(summary));
   }
 
@@ -86,7 +81,6 @@ export class TronManualSweepCommand extends CommandRunner {
       contract: options.contract,
       address: options.address,
       dryRun: options.dryRun ?? false,
-      trigger: ScanTrigger.CLI,
     });
     this.logger.log(render(summary));
   }

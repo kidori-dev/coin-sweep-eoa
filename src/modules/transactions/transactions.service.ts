@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
 
+import { Contract } from '../contracts/entities/contract.entity';
 import { formatUnits } from '../user-wallets/units';
 import { Transaction, TransactionStatus, TransactionType } from './entities/transaction.entity';
 
@@ -10,10 +11,10 @@ export interface RecordTransactionInput {
   type: TransactionType;
   status: TransactionStatus;
   address: string;
-  contract: string | null;
-  tokenSymbol: string;
-  tokenDecimals: number;
+  contract: Contract;
   txid?: string | null;
+  blockNumber?: number | null;
+  logIndex?: number | null;
   fromAddress: string;
   toAddress: string;
   amount: bigint;
@@ -29,9 +30,11 @@ export interface TransactionView {
   type: TransactionType;
   status: TransactionStatus;
   address: string;
+  contractId: string;
   contract: string | null;
   tokenSymbol: string;
   txid: string | null;
+  blockNumber: number | null;
   fromAddress: string;
   toAddress: string;
   amount: string;
@@ -46,6 +49,7 @@ export interface TransactionView {
 export interface FindTransactionsOptions {
   limit?: number;
   userWalletId?: string;
+  contractId?: string;
   type?: TransactionType;
 }
 
@@ -80,10 +84,12 @@ export class TransactionsService {
       type: input.type,
       status: input.status,
       address: input.address,
-      contract: input.contract,
-      tokenSymbol: input.tokenSymbol,
-      tokenDecimals: input.tokenDecimals,
+      contractId: input.contract.id,
+      tokenSymbol: input.contract.symbol,
+      tokenDecimals: input.contract.decimals,
       txid: input.txid ?? null,
+      blockNumber: input.blockNumber ?? null,
+      logIndex: input.logIndex ?? null,
       fromAddress: input.fromAddress,
       toAddress: input.toAddress,
       amount: input.amount.toString(),
@@ -99,12 +105,16 @@ export class TransactionsService {
     if (options.userWalletId) {
       where.userWalletId = options.userWalletId;
     }
+    if (options.contractId) {
+      where.contractId = options.contractId;
+    }
     if (options.type) {
       where.type = options.type;
     }
 
     const rows = await this.repo.find({
       where,
+      relations: { contract: true },
       order: { createdAt: 'DESC' },
       take: options.limit ?? 50,
     });
@@ -115,9 +125,12 @@ export class TransactionsService {
       type: row.type,
       status: row.status,
       address: row.address,
-      contract: row.contract,
+      contractId: row.contractId,
+      contract: row.contract?.address ?? null,
+      // 표시는 기록 당시 스냅샷을 쓴다. contract 행을 고쳐도 과거 금액이 흔들리지 않는다.
       tokenSymbol: row.tokenSymbol,
       txid: row.txid,
+      blockNumber: row.blockNumber,
       fromAddress: row.fromAddress,
       toAddress: row.toAddress,
       amount: row.amount,

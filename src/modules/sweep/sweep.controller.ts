@@ -8,7 +8,6 @@ import {
 } from '@nestjs/swagger';
 
 import { SESSION_AUTH } from '../../swagger.setup';
-import { ScanTrigger } from '../scan/entities/scan-run.entity';
 import { ManualSweepRequestDto, SweepRequestDto, SweepSummaryResponseDto } from './dto/sweep.dto';
 import { SweepService } from './sweep.service';
 
@@ -23,11 +22,12 @@ export class SweepController {
   @ApiOperation({
     summary: '집금 실행',
     description:
-      '최소 집금액 이상인 모든 유저 지갑의 USDT 를 메인지갑으로 모은다. dryRun 으로 먼저 확인할 수 있다.',
+      '등록된 활성 TRC20 전부에 대해, DB 미집금 잔액이 min_sweep_amount 이상인 지갑을 ' +
+      '메인지갑으로 모은다. 후보 선정에 체인 호출이 없다. dryRun 으로 먼저 확인할 수 있다.',
   })
   @ApiOkResponse({ type: SweepSummaryResponseDto })
   run(@Body() dto: SweepRequestDto): Promise<SweepSummaryResponseDto> {
-    return this.sweep.sweepAll({ dryRun: dto.dryRun, trigger: ScanTrigger.API });
+    return this.sweep.sweepAll({ dryRun: dto.dryRun });
   }
 
   @Post('manual')
@@ -41,6 +41,6 @@ export class SweepController {
   @ApiOkResponse({ type: SweepSummaryResponseDto })
   @ApiBadRequestResponse({ description: 'address / userRef 미지정, 또는 대상 없음' })
   runManual(@Body() dto: ManualSweepRequestDto): Promise<SweepSummaryResponseDto> {
-    return this.sweep.sweepManual({ ...dto, trigger: ScanTrigger.API });
+    return this.sweep.sweepManual(dto);
   }
 }

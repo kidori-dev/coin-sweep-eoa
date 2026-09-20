@@ -35,20 +35,17 @@ export interface AppConfig {
     mnemonic: string;
     hdPath: string;
     mainIndex: number;
-    tokenContract: string;
     feeStrategy: 'delegate' | 'transfer';
     delegateEnergy: number;
     feeFallback: boolean;
     gasTopupSun: number;
     bandwidthTopupSun: number;
     activationSun: number;
-    minSweepToken: number;
     feeLimitSun: number;
   };
   scan: {
-    confirmLagMs: number;
-    pageLimit: number;
-    staleRunMs: number;
+    blockBatch: number;
+    blockConcurrency: number;
   };
 }
 
@@ -94,19 +91,16 @@ export default (): AppConfig => ({
     mnemonic: process.env.TRON_MNEMONIC ?? '',
     hdPath: process.env.TRON_HD_PATH ?? "m/44'/195'/0'/0",
     mainIndex: parseInt(process.env.TRON_MAIN_INDEX ?? '0', 10),
-    tokenContract: process.env.TRON_TOKEN_CONTRACT ?? '',
     feeStrategy: (process.env.TRON_FEE_STRATEGY ?? 'delegate') as 'delegate' | 'transfer',
     delegateEnergy: parseInt(process.env.TRON_DELEGATE_ENERGY ?? '40000', 10),
     feeFallback: (process.env.TRON_FEE_FALLBACK ?? 'true') === 'true',
     gasTopupSun: parseInt(process.env.TRON_GAS_TOPUP_SUN ?? '15000000', 10),
     bandwidthTopupSun: parseInt(process.env.TRON_BANDWIDTH_TOPUP_SUN ?? '500000', 10),
     activationSun: parseInt(process.env.TRON_ACTIVATION_SUN ?? '100000', 10),
-    minSweepToken: parseInt(process.env.TRON_MIN_SWEEP_TOKEN ?? '5000000', 10),
     feeLimitSun: parseInt(process.env.TRON_FEE_LIMIT_SUN ?? '100000000', 10),
   },
   scan: {
-    confirmLagMs: parseInt(process.env.SCAN_CONFIRM_LAG_MS ?? '60000', 10),
-    pageLimit: parseInt(process.env.SCAN_PAGE_LIMIT ?? '200', 10),
-    staleRunMs: parseInt(process.env.SCAN_STALE_RUN_MS ?? '600000', 10),
+    blockBatch: parseInt(process.env.SCAN_BLOCK_BATCH ?? '500', 10),
+    blockConcurrency: parseInt(process.env.SCAN_BLOCK_CONCURRENCY ?? '5', 10),
   },
 });

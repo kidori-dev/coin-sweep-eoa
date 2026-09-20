@@ -1,4 +1,3 @@
-import { ScanTrigger } from '../scan/entities/scan-run.entity';
 import { TransactionStatus } from '../transactions/entities/transaction.entity';
 
 export enum SweepAsset {
@@ -7,27 +6,28 @@ export enum SweepAsset {
 }
 
 /** 수동 집금에서 contract 자리에 넣는 네이티브 TRX 표식 */
-export const NATIVE_TRX = 'TRX';
+export { NATIVE_REF as NATIVE_TRX } from '../contracts/entities/contract.entity';
 
 export interface SweepOptions {
   dryRun?: boolean;
-  trigger?: ScanTrigger;
 }
 
 export interface ManualSweepOptions {
+  /** 컨트랙트 주소, 또는 네이티브 TRX 표식 "TRX" */
   contract: string;
   address: string;
   dryRun?: boolean;
-  trigger?: ScanTrigger;
 }
 
 export interface SweepItem {
   address: string;
   asset: SweepAsset;
+  contractId: string;
+  /** 컨트랙트 주소. 네이티브 TRX 면 null */
   contract: string | null;
+  symbol: string;
   amount: string;
-  amountFormatted?: string;
-  symbol?: string;
+  amountFormatted: string;
   status: TransactionStatus;
   txid?: string;
   feeStrategy?: string;
@@ -36,13 +36,10 @@ export interface SweepItem {
   reason?: string;
 }
 
-export type SweepItemView = SweepItem & { amountFormatted: string; symbol: string };
-
 export interface SweepSummary {
   dryRun: boolean;
   mainAddress: string;
-  contract: string;
+  /** 검사한 (지갑 × 자산) 후보 수. 전체 지갑 수가 아니다 */
   scanned: number;
-  runId: string | null;
-  items: SweepItemView[];
+  items: SweepItem[];
 }

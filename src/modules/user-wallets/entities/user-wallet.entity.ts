@@ -7,6 +7,10 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
+/**
+ * HD 파생으로 뽑은 입금용 EOA. 주소 자체는 자산과 무관하므로 금액을 들고 있지 않는다.
+ * 자산별 잔고는 user_wallet_balance 에 있다.
+ */
 @Entity('user_wallet')
 export class UserWallet {
   @PrimaryGeneratedColumn('uuid')
@@ -25,12 +29,6 @@ export class UserWallet {
 
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive!: boolean;
-
-  @Column({ name: 'usdt_amount', type: 'numeric', precision: 38, scale: 0, default: 0 })
-  usdtAmount!: string;
-
-  @Column({ name: 'last_swept_at', type: 'timestamptz', nullable: true })
-  lastSweptAt!: Date | null;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;

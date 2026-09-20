@@ -18,6 +18,9 @@ export class TransactionResponseDto {
   @ApiProperty({ description: '대상 유저 지갑 주소' })
   address!: string;
 
+  @ApiProperty({ format: 'uuid', description: 'contract 테이블 참조' })
+  contractId!: string;
+
   @ApiProperty({
     example: 'TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf',
     nullable: true,
@@ -26,7 +29,7 @@ export class TransactionResponseDto {
   })
   contract!: string | null;
 
-  @ApiProperty({ example: 'USDT' })
+  @ApiProperty({ example: 'USDT', description: '기록 당시의 심볼 스냅샷' })
   tokenSymbol!: string;
 
   @ApiProperty({
@@ -36,6 +39,14 @@ export class TransactionResponseDto {
     description: '실패/스킵된 집금은 null',
   })
   txid!: string | null;
+
+  @ApiProperty({
+    example: 71106814,
+    nullable: true,
+    type: Number,
+    description: '체인 블록 번호 (입금만)',
+  })
+  blockNumber!: number | null;
 
   @ApiProperty({ example: 'TXgP1vXh7yFEYonq7oqsUPrkFJ73P8ztFA', description: '보낸 주소' })
   fromAddress!: string;

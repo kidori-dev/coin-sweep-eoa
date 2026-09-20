@@ -13,12 +13,29 @@ export interface AccountResources {
   bandwidthAvailable: number;
 }
 
+/** 블록 로그에서 뽑아낸 TRC20 Transfer 한 건. 주소는 전부 41 prefix 없는 20바이트 소문자 hex */
 export interface Trc20Transfer {
   txid: string;
-  from: string;
-  to: string;
-  amount: bigint;
+  blockNumber: number;
   blockTimestamp: number;
+  logIndex: number;
+  contractHex: string;
+  fromHex: string;
+  toHex: string;
+  amount: bigint;
+}
+
+/** keccak256("Transfer(address,address,uint256)") */
+const TRANSFER_TOPIC = 'ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
+/** Base58 주소를 로그와 비교할 수 있는 20바이트 소문자 hex 로 바꾼다 (41 prefix 제거) */
+export function toHexAddress(base58: string): string {
+  return TronWeb.address.toHex(base58).replace(/^41/, '').toLowerCase();
+}
+
+/** 20바이트 hex 주소를 Base58 로 되돌린다 */
+export function fromHexAddress(hex: string): string {
+  return TronWeb.address.fromHex(`41${hex.replace(/^41/, '')}`);
 }
 
 export interface TokenMeta {
@@ -28,6 +45,14 @@ export interface TokenMeta {
 }
 
 type TokenContract = Awaited<ReturnType<ReturnType<TronWeb['contract']>['at']>>;
+
+interface TransactionInfo {
+  id: string;
+  blockNumber?: number;
+  blockTimeStamp?: number;
+  receipt?: { result?: string };
+  log?: { address: string; topics?: string[]; data?: string }[];
+}
 
 @Injectable()
 export class TronService {
@@ -39,15 +64,12 @@ export class TronService {
   private readonly contracts = new Map<string, TokenContract>();
   private readonly metaCache = new Map<string, TokenMeta>();
 
-  readonly defaultToken: string;
-
   constructor(
     private readonly config: ConfigService,
     private readonly hdWallet: HdWalletService,
   ) {
     this.fullHost = this.config.get<string>('tron.fullHost')!;
     this.apiKey = this.config.get<string>('tron.apiKey')!;
-    this.defaultToken = this.config.get<string>('tron.tokenContract')!;
     this.feeLimit = this.config.get<number>('tron.feeLimitSun')!;
     this.reader = this.createClient();
     this.reader.setAddress(this.hdWallet.getMain().address);
@@ -89,7 +111,7 @@ export class TronService {
     return instance;
   }
 
-  async getTokenMeta(contract = this.defaultToken): Promise<TokenMeta> {
+  async getTokenMeta(contract: string): Promise<TokenMeta> {
     const cached = this.metaCache.get(contract);
     if (cached) {
       return cached;
@@ -108,60 +130,77 @@ export class TronService {
     return meta;
   }
 
-  async getTokenBalance(address: string, contract = this.defaultToken): Promise<bigint> {
+  async getTokenBalance(address: string, contract: string): Promise<bigint> {
     const instance = await this.getContract(contract);
     const raw = await instance.balanceOf(address).call();
     return BigInt(raw.toString());
   }
 
-  async getIncomingTrc20(
-    address: string,
-    contract: string,
-    sinceMs: number,
-    limit = 200,
-  ): Promise<Trc20Transfer[]> {
-    const base = this.fullHost.replace(/\/$/, '');
-    const params = new URLSearchParams({
-      contract_address: contract,
-      only_to: 'true',
-      order_by: 'block_timestamp,asc',
-      min_timestamp: String(sinceMs),
-      limit: String(limit),
-    });
+  /** 되돌릴 수 없는(solidified) 최신 블록 번호. 여기까지만 훑으면 reorg 를 다룰 필요가 없다 */
+  async getSolidifiedBlockNumber(): Promise<number> {
+    const block = await this.solidityPost<{
+      block_header?: { raw_data?: { number?: number } };
+    }>('walletsolidity/getnowblock', {});
+    const number = block.block_header?.raw_data?.number;
+    if (typeof number !== 'number') {
+      throw new Error('solidified 블록 번호를 읽지 못했습니다.');
+    }
+    return number;
+  }
 
-    const res = await fetch(`${base}/v1/accounts/${address}/transactions/trc20?${params}`, {
-      headers: this.apiKey ? { 'TRON-PRO-API-KEY': this.apiKey } : undefined,
+  /**
+   * 블록 하나의 모든 TRC20 Transfer 로그. 지갑 수와 무관하게 블록당 1콜이다.
+   *
+   * 네이티브 TRX 전송은 로그를 남기지 않아 여기에 잡히지 않는다 — 금액과 상대 주소가
+   * 블록 바디에만 있기 때문이다. TRX 는 입금 감시 대상이 아니라 집금 때 실잔액을 직접 읽는다.
+   */
+  async getBlockTransfers(blockNumber: number): Promise<Trc20Transfer[]> {
+    const infos = await this.solidityPost<TransactionInfo[]>(
+      'walletsolidity/gettransactioninfobyblocknum',
+      { num: blockNumber },
+    );
+
+    const transfers: Trc20Transfer[] = [];
+    for (const info of infos ?? []) {
+      // 되돌려진 트랜잭션의 로그는 반영하면 안 된다.
+      if (info.receipt?.result && info.receipt.result !== 'SUCCESS') {
+        continue;
+      }
+      (info.log ?? []).forEach((log, logIndex) => {
+        const topics = (log.topics ?? []).map((topic) => topic.toLowerCase());
+        // 표준 Transfer 는 from/to 가 indexed 라 토픽이 정확히 3개다.
+        if (topics.length !== 3 || topics[0] !== TRANSFER_TOPIC) {
+          return;
+        }
+        transfers.push({
+          txid: info.id,
+          blockNumber: info.blockNumber ?? blockNumber,
+          blockTimestamp: info.blockTimeStamp ?? 0,
+          logIndex,
+          contractHex: log.address.replace(/^41/, '').toLowerCase(),
+          fromHex: topics[1].slice(-40),
+          toHex: topics[2].slice(-40),
+          amount: BigInt(`0x${(log.data || '0').slice(0, 64) || '0'}`),
+        });
+      });
+    }
+    return transfers;
+  }
+
+  private async solidityPost<T>(path: string, body: Record<string, unknown>): Promise<T> {
+    const base = this.fullHost.replace(/\/$/, '');
+    const res = await fetch(`${base}/${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(this.apiKey ? { 'TRON-PRO-API-KEY': this.apiKey } : {}),
+      },
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
-      throw new Error(`TronGrid 조회 실패 (${res.status}): ${await res.text()}`);
+      throw new Error(`${path} 실패 (${res.status}): ${await res.text()}`);
     }
-
-    const body = (await res.json()) as {
-      success?: boolean;
-      error?: string;
-      data?: {
-        transaction_id: string;
-        from: string;
-        to: string;
-        value: string;
-        type: string;
-        block_timestamp: number;
-        token_info?: { address?: string };
-      }[];
-    };
-    if (body.success === false) {
-      throw new Error(`TronGrid 조회 실패: ${body.error ?? 'unknown'}`);
-    }
-
-    return (body.data ?? [])
-      .filter((row) => row.type === 'Transfer' && row.to === address)
-      .map((row) => ({
-        txid: row.transaction_id,
-        from: row.from,
-        to: row.to,
-        amount: BigInt(row.value),
-        blockTimestamp: row.block_timestamp,
-      }));
+    return (await res.json()) as T;
   }
 
   async isActivated(address: string): Promise<boolean> {
@@ -199,7 +238,7 @@ export class TronService {
     privateKey: string,
     to: string,
     amount: bigint,
-    contract = this.defaultToken,
+    contract: string,
   ): Promise<string> {
     const client = this.createClient(privateKey);
     const instance = await client.contract().at(contract);

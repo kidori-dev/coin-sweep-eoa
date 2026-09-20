@@ -1,9 +1,10 @@
 import { Logger } from '@nestjs/common';
 import { Command, CommandRunner, Option } from 'nest-commander';
 
+import { ContractsService } from '../modules/contracts/contracts.service';
+import { TronService } from '../modules/tron/tron.service';
 import { UserWalletsService } from '../modules/user-wallets/user-wallets.service';
 import { formatUnits } from '../modules/user-wallets/units';
-import { TronService } from '../modules/tron/tron.service';
 
 interface IssueOptions {
   userRef?: string;
@@ -46,41 +47,56 @@ export class TronIssueCommand extends CommandRunner {
 
 @Command({
   name: 'tron:balance',
-  description: '입금주소들의 TRX / 토큰 잔액을 조회한다.',
+  description:
+    '입금주소가 들고 있는 자산을 전부 보여준다 (체인 실잔액 + DB 미집금). ' +
+    '지갑마다 체인을 조회하므로 지갑이 많으면 느리다.',
 })
 export class TronBalanceCommand extends CommandRunner {
   private readonly logger = new Logger(TronBalanceCommand.name);
 
   constructor(
     private readonly deposits: UserWalletsService,
+    private readonly contracts: ContractsService,
     private readonly tron: TronService,
   ) {
     super();
   }
 
   async run(): Promise<void> {
-    const [rows, meta] = await Promise.all([this.deposits.findAll(), this.tron.getTokenMeta()]);
+    const [rows, tokens] = await Promise.all([
+      this.deposits.findAll(),
+      this.contracts.findTokens(),
+    ]);
 
     if (rows.length === 0) {
       this.logger.log('발급된 입금주소가 없습니다. tron:issue 로 먼저 발급하세요.');
       return;
     }
 
-    const lines = [
-      `idx  address                             TRX            ${meta.symbol}`.padEnd(70) +
-        'DB잔고',
-    ];
+    const balances = await this.deposits.findBalanceMap(rows.map((row) => row.id));
+    const lines: string[] = [];
+
     for (const row of rows) {
-      const balance = await this.deposits.getBalance(row.address);
+      const trxSun = await this.tron.getTrxBalance(row.address);
       lines.push(
-        [
-          String(row.derivationIndex).padEnd(4),
-          row.address.padEnd(35),
-          formatUnits(balance.trxSun, 6).padEnd(14),
-          formatUnits(balance.token, meta.decimals).padEnd(15),
-          formatUnits(BigInt(row.usdtAmount), meta.decimals),
-        ].join(' '),
+        `[${String(row.derivationIndex).padStart(3)}] ${row.address}  TRX ${formatUnits(trxSun, 6)}`,
       );
+
+      const owned = balances.get(row.id) ?? [];
+      for (const token of tokens) {
+        const chain = await this.tron.getTokenBalance(row.address, token.address!);
+        const db = owned.find((item) => item.contractId === token.id);
+        const pending = BigInt(db?.pendingAmount ?? '0');
+        // 체인에도 DB 에도 없는 자산은 줄만 늘리므로 접는다.
+        if (chain === 0n && pending === 0n) {
+          continue;
+        }
+        lines.push(
+          `        ${token.symbol.padEnd(8)} chain ${formatUnits(chain, token.decimals).padEnd(20)}` +
+            ` DB미집금 ${formatUnits(pending, token.decimals)}` +
+            (token.isActive ? '' : '  [inactive]'),
+        );
+      }
     }
 
     this.logger.log('\n' + lines.join('\n'));

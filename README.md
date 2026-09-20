@@ -8,7 +8,11 @@ NestJS 11 + PostgreSQL 18 **어드민 전용** API. 서비스 유저 로그인�
 ```bash
 cp .env.example .env            # 최초 1회
 docker compose up -d            # 이거 하나면 끝 (DB → 마이그레이션 → API watch)
-docker compose exec api npm run cli -- db:seed   # 최초 1회, 어드민 계정 생성
+
+# 최초 1회: 어드민 계정 + 네이티브 TRX 행
+docker compose exec api npm run cli -- db:seed
+# 감시·집금할 TRC20 등록 (이걸 해야 입금 스캔이 돈다)
+docker compose exec api npm run cli -- tron:contract-add -c TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf -m 5000000
 ```
 
 소스를 저장하면 **컨테이너 재시작 없이 자동 리빌드·재기동된다**(약 10초). 따로 켤 것 없다.
@@ -82,7 +86,7 @@ docker compose -f docker-compose.prod.yml run --rm api npm run migration:run:pro
 응답 DTO는 엔티티를 그대로 내보내지 않도록 `static from(entity)` 로 변환한다.
 
 **타입** — 서비스 안팎에서 주고받는 인터페이스는 서비스 파일에 두지 말고 모듈의 `*.types.ts` 로 뺀다
-(`scan.types.ts`, `watcher.types.ts`, `sweep.types.ts`). 서비스 파일에는 클래스와 그 파일에서만 쓰는
+(`watcher.types.ts`, `sweep.types.ts`). 서비스 파일에는 클래스와 그 파일에서만 쓰는
 상수만 남긴다. HTTP 경계에서 쓰는 모양은 `*.types.ts` 가 아니라 `dto/` 의 DTO 클래스다.
 
 **가드** — 기본값이 "전 라우트 로그인 필수"(`AuthenticatedGuard` 가 전역).
@@ -98,18 +102,26 @@ DTO 필드에 `@ApiProperty`. `SWAGGER_ENABLED` 미지정 시 production 에서�
 
 ### 자동 집금 — 모든 유저의 USDT
 
-`TRON_MIN_SWEEP_TOKEN` 이상을 가진 **모든 유저 지갑의 USDT** 를 메인지갑으로 모은다.
-대상 토큰은 `TRON_TOKEN_CONTRACT` 하나뿐이고, TRX 나 다른 TRC20 은 **건드리지 않는다.**
+**등록된 활성 TRC20 전부**에 대해, DB 미집금 잔액이 `contract.min_sweep_amount` 이상인 지갑을
+메인지갑으로 모은다. 컨트랙트를 하나 더 등록하면 입금 감시와 자동 집금이 함께 따라온다.
+네이티브 TRX 는 자동 집금에서 빠지고 수동 집금으로만 가져온다.
 
 ```bash
 docker compose exec api npm run cli -- tron:sweep --dry-run   # 대상만 계산
 docker compose exec api npm run cli -- tron:sweep             # 실행
 ```
 
-집금 기준액은 `TRON_MIN_SWEEP_TOKEN` 이다(기본 5 USDT). 그 미만은 그대로 두고, 필요하면 수동 집금으로 가져온다.
+집금 기준액은 자산별 값이라 `contract.min_sweep_amount` 가 들고 있다 (`tron:contract-add -m` 으로 지정).
+그 미만은 그대로 두고, 필요하면 수동 집금으로 가져온다.
 
-집금은 체인에서 자산을 옮기기만 한다. 잔고 회계는 하지 않으며, 결과는 `transactions`(`type=sweep`) 와
-`user_wallet.last_swept_at` 에 남고 실행 자체는 `scan_run`(`scope=sweep`) 에 남는다.
+**집금 대상은 DB 로 고른다.** `deposit_amount - sweep_amount >= min_sweep_amount` 인 행만 뽑으므로
+후보를 찾는 데 체인 호출이 **0번**이다. 지갑 전부에 `balanceOf` 를 쏘면 지갑 수에 비례해 느려져서,
+와쳐를 블록 기준으로 고쳐도 집금이 같은 벽에 막힌다.
+
+실제로 옮길 금액은 체인이 정답이다. 후보로 뽑힌 지갑만 `balanceOf` 를 읽고, DB 기대치와 어긋나면
+체인을 따르며 그 사실이 `reason` 에 남는다 (체인 잔액이 0 이면 경고 후 건너뛴다).
+
+결과는 `transactions`(`type=sweep`) 에 남고, 성공분이 `user_wallet_balance.sweep_amount` 에 더해진다.
 
 ### 금액 표기
 
@@ -120,27 +132,70 @@ docker compose exec api npm run cli -- tron:sweep             # 실행
 API 응답은 어디서든 원값과 표시용 값을 함께 준다.
 
 ```json
-// 입금주소
-{ "usdtAmount": "12345678", "usdtAmountFormatted": "12.345678", "usdtSymbol": "USDT" }
+// 입금주소 (자산별 balances 배열)
+{ "symbol": "USDT", "depositAmount": "12345678", "sweepAmount": "0",
+  "pendingAmount": "12345678", "pendingAmountFormatted": "12.345678" }
 
 // 집금 결과 / 집금 이력
 { "asset": "TOKEN", "amount": "8000000", "amountFormatted": "8.000000", "symbol": "USDT" }
 ```
 
-`decimals` 는 컨트랙트에서 읽어 캐시하므로, 토큰을 바꾸면 표시 값도 자동으로 따라간다.
-TRX 는 decimals 6 으로 고정 처리한다.
+`symbol` / `decimals` 는 `contract` 행에서 읽으므로 체인 조회 없이도 표시가 된다.
 
-### user_wallet
+### contract — 자산 한 건이 한 행
 
-입금주소를 담는 테이블. `usdt_amount` 는 **DB 가 들고 있는 USDT 잔고**로, 입금 와쳐가 올려준다.
-집금은 이 값을 건드리지 않는다.
+토큰 주소를 env 문자열로 들고 다니면 오타 하나에 **조용히** 별개의 커서·이력이 생긴다. 주소를 행으로
+고정하고 `transactions` / `user_wallet_balance` 가 모두 FK 로 이 행을 가리킨다.
+네이티브 TRX 도 `address = NULL` 인 한 행으로 등록해서, 예전처럼 "null 이면 TRX" 와 "문자열 `'TRX'` 면 TRX"
+가 섞이지 않게 했다.
+
+**컨트랙트 행을 하나 추가하면 그 자산의 입금 감시와 자동 집금이 같이 켜진다.**
 
 | 컬럼 | 의미 |
 | --- | --- |
-| `address` / `derivation_index` | 입금주소와 HD 파생 인덱스 |
-| `user_ref` | 서비스 쪽 사용자 식별자 |
-| `usdt_amount` | DB 가 관리하는 USDT 잔고 (와쳐가 갱신) |
-| `last_swept_at` | 마지막 집금 시각 |
+| `chain` / `address` | `tron`, TRC20 컨트랙트 주소. `address` 가 null 이면 네이티브 TRX |
+| `symbol` / `decimals` | 체인에서 읽어 굳혀 둔 메타데이터 |
+| `is_native` | 네이티브 자산 여부 |
+| `is_active` | false 면 새 작업에 쓰지 않는다 (이력은 FK 로 남으므로 삭제 대신 이 플래그) |
+| `min_sweep_amount` | 자동 집금 최소 금액 (최소 단위) |
+
+`(chain, address)` 유니크(`NULLS NOT DISTINCT`)라 네이티브 행도 체인당 하나만 존재한다.
+**어떤 자산을 다룰지는 전부 이 테이블이 정한다.** env 에는 컨트랙트 주소가 없다 — 등록 경로가
+`tron:contract-add` 하나뿐이라 "env 를 바꿨는데 왜 안 바뀌지" 가 생기지 않는다. `symbol`/`decimals` 는
+체인에서 읽어 굳힌다. **감시 대상과 집금 대상이 같은 조건**이다 — `is_active AND NOT is_native`.
+어디까지 훑었는지는 여기 없다. 그건 스캐너의 상태라 `chain_scan_state` 가 한 행으로 들고 있다.
+이력 테이블을 FK 가 붙들고 있어 `ON DELETE RESTRICT` — 쓰인 적 있는 컨트랙트는 지워지지 않는다.
+
+```bash
+npm run cli -- db:seed                              # 어드민 + 네이티브 TRX 행
+npm run cli -- tron:contract                        # 등록된 자산 목록 + 스캔 커서
+npm run cli -- tron:contract-add -c TR7NHq... -m 5000000   # 등록 즉시 감시·집금 대상
+```
+
+### user_wallet / user_wallet_balance
+
+`user_wallet` 은 주소와 HD 인덱스만 담는다. EOA 주소는 토큰과 무관하게 여러 자산을 동시에 담으므로,
+지갑 행에 금액 컬럼을 두면 그 행이 사실상 (지갑 × 토큰) 이 되어 주소·파생인덱스 유니크가 깨진다.
+잔고는 `user_wallet_balance` 에 자산별로 나눠 둔다.
+
+조회도 "기준 자산 하나"가 아니라 **가진 것을 전부** 돌려준다. `GET /user-wallets` 는 DB 잔고를
+자산별로 주고(활성 컨트랙트는 입금이 없어도 0 으로 채워 응답 모양을 고정한다),
+`GET /user-wallets/:id/balance` 는 TRX 와 등록된 TRC20 전부의 **체인 실잔액**을 읽어 준다.
+후자는 비활성 컨트랙트도 포함한다 — 감시에서 뺀 토큰이 남아 있으면 그게 제일 보고 싶은 값이니까.
+
+| 컬럼 | 의미 |
+| --- | --- |
+| `user_wallet.address` / `derivation_index` | 입금주소와 HD 파생 인덱스 |
+| `user_wallet.user_ref` | 서비스 쪽 사용자 식별자 |
+| `user_wallet_balance.contract_id` | 어느 자산의 잔고인지 |
+| `user_wallet_balance.deposit_amount` | 입금 누계. 와쳐가 더한다. 줄지 않는다 |
+| `user_wallet_balance.sweep_amount` | 집금 누계. 집금에 성공할 때마다 더한다. 줄지 않는다 |
+| `user_wallet_balance.last_swept_at` | 그 자산을 마지막으로 집금한 시각 |
+
+둘 다 단조 증가하는 누계이고 **그 차이가 미집금 잔액**이다. 집금 대상을 이 값으로 고른다.
+
+`(user_wallet_id, contract_id)` 유니크. 잔고 행은 첫 입금 때 upsert 로 생기므로 지갑 발급 시점에
+자산별 행을 미리 만들어 둘 필요가 없다.
 
 ### 수동 집금 — 컨트랙트 + 주소
 
@@ -156,70 +211,121 @@ npm run cli -- tron:sweep-manual -c TRX -a TGvDe...          # 네이티브 TRX
 curl -b cookie.txt -X POST http://localhost:3000/api/sweeps/manual   -H 'Content-Type: application/json'   -d '{"contract":"TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf","address":"TGvDe..."}'
 ```
 
-### 입금 와쳐
+### 입금 와쳐 — 블록 스캔
 
-USDT 컨트랙트로 들어온 **입금만** 찾아서 `user_wallet.usdt_amount` 를 올린다. 집금과는 무관하게 돈다.
+등록된 활성 TRC20 으로 우리 입금주소에 들어온 **입금만** 찾아서
+`user_wallet_balance.deposit_amount` 를 올린다. 집금과는 무관하게 돈다.
 
 ```bash
 npm run cli -- tron:watch --dry-run     # DB 를 바꾸지 않고 감지 결과만
-npm run cli -- tron:watch               # 반영
+npm run cli -- tron:watch               # 한 배치만 훑고 종료
+npm run cli -- tron:watch --loop        # 상주하며 계속 따라간다 (워커)
+npm run cli -- tron:watch -b 2000       # 한 배치에서 훑을 블록 수
 ```
 
 `POST /api/watcher/scan` 으로도 같은 일을 하고, `GET /api/transactions?type=deposit` 로 감지 내역을 본다.
 
 동작 방식:
 
-- 지갑별로 `scan_cursor.scanned_through_at` 부터 **`지금 - SCAN_CONFIRM_LAG_MS`** 까지 TronGrid 의
-  TRC20 입금 내역을 읽는다. 버퍼 안쪽(너무 최근)의 전송은 `pending` 으로 두고 다음 실행에서 처리한다.
-- 감지한 입금은 `transactions` 에 기록하고, **같은 DB 트랜잭션 안에서** `usdt_amount` 를 올리고
-  커서를 전진시킨다. 셋이 함께 커밋되므로 커서만 앞서 나가 입금이 새는 창이 없다.
-- `(txid, user_wallet_id)` 유니크라 커서를 되감아 같은 구간을 다시 훑어도 중복 반영되지 않는다.
-- 한 지갑의 조회가 실패하면 그 지갑의 커서만 두고 나머지를 계속 훑는다. 실패는 `scan_cursor.last_error`
-  와 `scan_run` 에 남고, 다음 실행이 같은 구간을 재시도한다.
+- `chain_scan_state.last_scanned_block` 다음 블록부터 **확정(solidified) 블록**까지, 한 번에
+  `SCAN_BLOCK_BATCH` 개씩 끊어서 훑는다.
+- 블록마다 `walletsolidity/gettransactioninfobyblocknum` **1콜**. 그 응답에 그 블록의 모든 로그가
+  들어 있으므로 `Transfer` 토픽 → 우리 컨트랙트 → 우리 입금주소 순으로 걸러낸다.
+- **지갑이 몇 개든, 등록된 토큰이 몇 개든 호출 수가 같다.** 주소 대조는 메모리 해시셋에서 한다.
+- 감지한 입금은 `transactions` 에 기록하고, **같은 DB 트랜잭션 안에서** 잔고를 올리고 커서를
+  전진시킨다. 함께 커밋되므로 커서만 앞서 나가 입금이 새는 창이 없다.
+- 되돌려진 트랜잭션(`receipt.result != SUCCESS`)의 로그는 건너뛴다.
 
-아직 스케줄러는 붙이지 않았다. 주기 실행이 필요하면 `@nestjs/schedule` 의 `@Cron` 으로 `scan()` 을 부르면 된다.
+왜 블록 기준인가 — 지갑마다 TronGrid 계정 조회를 쏘면 호출 수가 지갑 수에 비례한다. 지갑 1000개면
+한 사이클에 순차 1000콜(약 200초)이라 60초 주기가 아예 성립하지 않는다. 블록 기준은 상수다.
 
-### scan_cursor — "여기까지 조회 완료"
+#### 확정 블록만 본다
 
-"어디까지 봤는지" 를 결과 테이블에서 유추하지 않고 따로 들고 있는다. `transactions` 의
-`MAX(block_timestamp)` 로 커서를 대신하면 ① 입금이 한 건도 없는 지갑은 영원히 생성 시각부터 다시
-조회하게 되고 ② 토큰을 하나 더 붙이면 새 토큰의 커서가 USDT 커서로 점프해 과거 입금을 영영 놓친다.
+`walletsolidity/*` 로 읽으므로 되돌아갈 수 있는 블록은 애초에 보이지 않는다. **reorg 처리가 필요 없고**,
+"지금 - 확정 지연 버퍼" 같은 시간 휴리스틱도 없어졌다. 커서가 타임스탬프에서 블록 번호로 바뀌면서
+동률(같은 timestamp 에 전송이 몰려 커서가 안 밀리는 문제)도 같이 사라졌다.
 
-| 컬럼 | 의미 |
-| --- | --- |
-| `scope` | `deposit` / `sweep` |
-| `user_wallet_id` / `contract` | 커서의 대상. 둘 다 null 이면 전역, `contract` 가 null 이면 네이티브 TRX |
-| `scanned_through_at` | **이 시각까지는 빠짐없이 조회했다.** 다음 조회의 `min_timestamp` |
-| `last_seen_txid` | 경계에 걸친 마지막 tx (커서가 inclusive 라 한 건은 늘 재수신된다) |
-| `truncated` | `SCAN_PAGE_LIMIT` 에 걸려 남은 구간이 있다. 커서를 끝까지 밀지 않고 다음 실행이 이어받는다 |
-| `last_run_at` / `last_success_at` / `last_error` | 지연·실패 감시용 |
+#### TRX 가 빠진 이유
 
-`(scope, user_wallet_id, contract)` 유니크(`NULLS NOT DISTINCT`)라 대상당 한 행만 존재한다.
+네이티브 TRX 전송은 **컨트랙트 이벤트가 아니다.** TransactionInfo 에는 로그만 있고 금액·상대 주소가
+없어서, TRX 를 잡으려면 블록 바디(`getblockbynum`)를 따로 받아야 한다. 블록당 콜이 2배가 되는데,
+그렇게 해도 컨트랙트가 보낸 TRX(`internal_transactions`)는 여전히 놓친다.
+
+게다가 집금할 때 메인지갑이 입금주소로 가스용 TRX 를 보내므로, TRX 입금을 감시하면 **우리 가스
+충전금이 유저 입금으로 기록된다.**
+
+TRX 는 원장이 아니라 잔액이면 충분하다 — 집금은 어차피 체인 실잔액을 직접 읽고(`sweepTrxAll`),
+잘못 들어온 TRX 는 `tron:balance` 의 TRX 열에 그대로 보인다. `contract` 에 TRX 행은 있지만
+`is_native = true` 라 감시 대상에서 빠진다.
+
+#### 스캔 위치는 체인 단위다 — chain_scan_state
+
+"어디까지 훑었는지" 는 **체인당 한 행**이다. 자산마다 커서를 두면 두 가지가 생긴다.
+
+첫째, 정상 상태에서 모든 행이 **같은 값**을 들고 있다. 한 개의 사실을 N개로 복사해 둔 것뿐이다.
+
+둘째가 진짜 문제다. 컨트랙트 하나를 과거 블록부터 등록하면 스캔 시작점이 가장 뒤처진 커서를
+따라 과거로 끌려가서, **그동안 다른 자산의 신규 입금까지 멈춘다.** 하루치를 메우면 약 한 시간이고,
+그 사이 조용히 멈춰 있어 알아채기도 어렵다.
+
+그래서 위치는 `chain_scan_state` 한 행에만 두고, "이 자산을 보는가" 는 `contract.is_active` 가
+답한다. 덕분에 감시 대상 조건이 자동 집금 대상 조건과 같아졌다.
+
+#### 과거 구간 다시 훑기 — backfill
 
 ```bash
-npm run cli -- tron:cursor                                  # 커서 + 최근 실행 이력
-npm run cli -- tron:cursor-rewind -t 2026-09-01T00:00:00Z   # 전체 되감기
-npm run cli -- tron:cursor-rewind -t 2026-09-01T00:00:00Z -a TGvDe...   # 한 주소만
+npm run cli -- tron:backfill -f 71106800 -t 71106900                  # 전 자산
+npm run cli -- tron:backfill -f 71106800 -t 71106900 -c TXYZop...     # 특정 컨트랙트만
+npm run cli -- tron:backfill -f 71106800 -t 71106900 --dry-run
 ```
 
-되감기는 그 구간을 **다시 조회**할 뿐이고, 이미 기록된 입금은 `(txid, user_wallet_id)` 유니크에 막혀
-잔고를 다시 올리지 않는다. 다만 그 구간에 **아직 기록된 적 없는** 입금이 있으면 그건 새로 반영된다.
+**커서를 건드리지 않는다.** 백필이 몇 시간을 돌아도 메인 스캔은 계속 tip 을 따라가므로 신규 입금이
+밀리지 않는다. 이미 기록된 입금은 유니크 인덱스에 막혀 잔고를 다시 올리지 않고, 그 구간에
+**아직 기록된 적 없는** 입금만 새로 반영된다.
 
-### scan_run — 실행 이력
+새 컨트랙트의 과거 입금을 채울 때도 이걸 쓴다 — `tron:contract-add` 는 등록 즉시 감시 대상으로
+만들 뿐이고, 그 이전 블록은 backfill 이 맡는다.
 
-실행 1회당 한 행. 결과 행만 봐서는 "입금이 없었다" 와 "워처가 죽어 있었다" 가 구분되지 않는다.
+#### 밀렸는지 보는 법
 
-| 컬럼 | 의미 |
-| --- | --- |
-| `scope` / `trigger` / `dry_run` | `deposit`·`sweep`, `api`·`cli`, dry-run 여부 |
-| `status` | `running` / `success` / `failed`. **`running` 인 채로 오래 남아 있으면 프로세스가 죽은 것** |
-| `window_from` ~ `window_to` | 이번 실행이 다룬 구간 (집금은 커서가 없어 비어 있다) |
-| `wallets_scanned` / `found` / `applied` / `pending` / `failed` | 건수 |
-| `error` | 실패 사유 (지갑별 사유를 모아 담는다) |
-| `started_at` / `finished_at` | 실행 시각 |
+`scan_run` 같은 실행 이력 테이블은 없앴다. 블록 커서 자체가 더 정확한 생존 신호이기 때문이다 —
+응답의 `remainingBlocks`(= `solidifiedBlock - toBlock`)가 **계속 커지면 따라가지 못하는 중**이다.
+TRON 은 3초에 한 블록이므로 이 값에 3을 곱하면 대략 몇 초나 밀렸는지가 나온다.
+`tron:info` 의 `scan position` 줄에서도 같은 값을 본다.
 
-입금 스캔은 `dryRun` 이면 아무것도 쓰지 않으므로 `scan_run` 에도 남지 않는다. 집금은 dry-run 도 남긴다.
-집금에는 커서가 없다 — 체인 잔액을 직접 읽으므로 되감을 지점이 없고, 실행 이력만 남긴다.
+#### 상주 실행 — `--loop`
+
+주기 실행은 크론이 아니라 `--loop` 상주 프로세스로 한다.
+
+```bash
+node dist/cli tron:watch --loop              # 프로덕션
+node dist/cli tron:watch --loop -i 5000      # 따라잡았을 때 쉬는 간격 (기본 3초)
+```
+
+- **밀려 있으면 쉬지 않는다.** 한 배치를 끝내고 `remainingBlocks > 0` 이면 곧바로 다음 배치로
+  넘어가고, 따라잡았을 때만 블록 간격(3초)만큼 쉰다. 주기를 하나로 고정해야 하는 크론과 달리
+  백로그를 전속력으로 비운다 — 실측으로 3,000블록 밀린 상태에서 초당 20~25블록씩 줄어든다.
+- **동시 실행은 advisory lock 이 막는다.** 워커를 두 개 띄우거나 사람이 수동으로 `tron:watch` 를
+  쳐도 한쪽은 `skipped` 로 즉시 돌아온다. 세션 단위 락이라 프로세스가 죽으면 자동으로 풀린다.
+  `tron:backfill` 은 메인 스캔과 **동시에 도는 게 설계 의도**라 이 락을 잡지 않는다.
+- **실패해도 죽지 않는다.** 노드나 DB 가 끊기면 1초 → 2초 → … 30초까지 백오프하며 계속 재시도한다.
+  프로세스를 내려 버리면 부팅만 반복해서 태우기 때문이다. 장애 감지는 종료코드가 아니라
+  `lag` 이 계속 커지는 걸로 한다.
+- **SIGTERM 을 받으면 진행 중인 배치를 마치고 나간다.** 입금 반영과 커서 전진이 한 트랜잭션이라
+  중간에 끊겨도 유실은 없지만, 굳이 끊을 이유도 없다.
+- 조용할 때는 로그를 남기지 않고 5분마다 한 줄씩 하트비트만 찍는다.
+
+로그는 한 줄 요약이다:
+
+```
+blocks=71108397~71108446 solidified=71108698 lag=252 found=1 applied=1
+```
+
+프로세스 관리는 컨테이너 재시작 정책에 맡기면 된다. 이때 **`npm run` 을 거치지 말고 `node dist/cli`
+를 직접 실행**해야 SIGTERM 이 node 에 그대로 닿는다 — 셸 래퍼가 끼면 종료 신호가 중간에서 먹힌다.
+
+나중에 k8s 로 가면 CronJob 쪽이 낫다. 재시도·실행 이력·`concurrencyPolicy: Forbid` 를 플랫폼이
+주므로 상주 프로세스도 advisory lock 도 필요 없어진다.
 
 ### transactions
 
@@ -230,23 +336,35 @@ npm run cli -- tron:cursor-rewind -t 2026-09-01T00:00:00Z -a TGvDe...   # 한 �
 | `type` | `deposit`(와쳐가 잡은 입금) / `sweep`(집금) |
 | `status` | `success` / `failed` / `skipped` |
 | `address` | 대상 유저 지갑 주소 |
-| `contract` / `token_symbol` / `token_decimals` | 토큰 메타. `contract` 가 null 이면 네이티브 TRX |
+| `contract_id` | `contract` 행 FK. 네이티브 TRX 도 자기 행을 가리킨다 |
+| `token_symbol` / `token_decimals` | **기록 시점 스냅샷.** `contract` 행을 고쳐도 과거 이력의 표시 금액이 따라 움직이면 안 되므로 FK 와 별개로 굳혀 둔다 |
 | `txid` | 트랜잭션 해시. 실패·스킵된 집금은 null |
+| `block_number` / `log_index` | 어느 블록의 몇 번째 로그였는지 (입금만) |
 | `from_address` → `to_address` | 입금이면 `보낸사람 → 우리지갑`, 집금이면 `우리지갑 → 메인지갑` |
 | `amount` | 최소 단위 금액 |
 | `fee_strategy` / `fee_txid` | 집금에서 쓴 수수료 방식과 그 트랜잭션 |
 | `error` | 실패 사유 |
 | `block_timestamp` | 체인에 포함된 시각 (입금만 채워짐) |
 
-`(txid, user_wallet_id)` 유니크가 입금 중복 반영을 막는 장치다.
-조회는 `GET /api/transactions?type=deposit|sweep` 하나로 한다.
+입금 중복 반영을 막는 건 **부분 유니크 인덱스**다:
+
+```sql
+UNIQUE (txid, user_wallet_id, contract_id, log_index) WHERE type = 'deposit'
+```
+
+`log_index` 가 키에 들어가야 한다 — 한 트랜잭션이 같은 주소로 서로 다른 토큰을 보내거나(배치 전송)
+같은 토큰을 두 번 보낼 수 있고, `(txid, user_wallet_id)` 만으로는 **두 번째 건이 조용히 사라진다.**
+집금은 append-only 라 제약을 걸지 않는다 (실패 건은 `txid` 자체가 없다).
+조회는 `GET /api/transactions?type=deposit|sweep` 하나로 한다 (`contract` 로도 거를 수 있다, 네이티브는 `TRX`).
 
 ### 그 밖의 커맨드
 
 ```bash
 npm run cli -- tron:info                  # 네트워크/메인지갑 상태
 npm run cli -- tron:issue -c 3 -u user-1  # 입금주소 발급
-npm run cli -- tron:balance               # 입금주소 잔액 + 누적입금
+npm run cli -- tron:balance               # 입금주소 체인 실잔액 + DB 잔고
+npm run cli -- tron:contract              # 등록된 자산 목록 + 스캔 커서
+npm run cli -- tron:backfill -f <from> -t <to>   # 과거 구간 재조회 (커서 무관)
 npm run cli -- tron:stake -a 200          # delegate 전략용 TRX 스테이킹
 ```
 
@@ -256,14 +374,12 @@ npm run cli -- tron:stake -a 200          # delegate 전략용 TRX 스테이킹
 | --- | --- | --- |
 | POST | `/api/user-wallets` | 입금주소 발급 (`{ "userRef": "user-1024" }`) |
 | GET | `/api/user-wallets` | 목록 |
-| GET | `/api/user-wallets/:id/balance` | 체인 잔액 조회 |
-| POST | `/api/sweeps` | 모든 유저의 USDT 집금 (`{ "dryRun": true }` 지원) |
+| GET | `/api/user-wallets/:id/balance` | 체인 실잔액 — TRX + 등록된 TRC20 전부 |
+| POST | `/api/sweeps` | 등록된 TRC20 전부 자동 집금 (`{ "dryRun": true }` 지원) |
 | POST | `/api/sweeps/manual` | 수동 집금 (`{ "contract", "address", "dryRun" }`) |
-| POST | `/api/watcher/scan` | 입금 감지 1회 실행 |
-| GET | `/api/scans/cursors` | 스캔 커서 목록 (`scope`) |
-| POST | `/api/scans/cursors/rewind` | 커서 강제 되감기 (`{ "to", "address", "contract", "scope" }`) |
-| GET | `/api/scans/runs` | 실행 이력 (`scope`, `status`, `limit`) |
-| GET | `/api/transactions` | 입금·집금 내역 (`limit`, `userWalletId`, `type`) |
+| POST | `/api/watcher/scan` | 입금 블록 스캔 1회 실행 (`{ "dryRun", "maxBlocks" }`). 다른 스캔이 돌면 `skipped: true` |
+| GET | `/api/transactions` | 입금·집금 내역 (`limit`, `userWalletId`, `type`, `contract`) |
+| GET | `/api/contracts` | 등록된 자산 목록 |
 
 ### 수수료 전략 (`TRON_FEE_STRATEGY`)
 
@@ -366,10 +482,11 @@ src/
 │  ├─ auth/                # 로컬 전략, 세션 시리얼라이저, 컨트롤러, dto/
 │  ├─ admins/              # Admin 엔티티 + 서비스
 │  ├─ tron/                # TronWeb 래퍼 + HD 지갑 파생
-│  ├─ user-wallets/        # 입금주소 발급/조회 (user_wallet 테이블)
+│  ├─ user-wallets/        # 입금주소 발급/조회 (user_wallet, user_wallet_balance)
 │  ├─ sweep/               # 집금 로직
 │  ├─ transactions/        # 입금·집금 기록 (transactions 테이블)
-│  └─ watcher/             # 입금 감지 → usdt_amount 반영
+│  ├─ contracts/           # 자산 레지스트리 (contract 테이블)
+│  └─ watcher/             # 블록 스캔 → deposit_amount 반영 (chain_scan_state 커서)
 ├─ commands/               # CLI 커맨드 + CliModule
 └─ health/                 # terminus 헬스체크
 

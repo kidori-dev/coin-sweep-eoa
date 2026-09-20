@@ -10,9 +10,9 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { AdminsModule } from './modules/admins/admins.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { ContractsModule } from './modules/contracts/contracts.module';
 import { UserWalletsModule } from './modules/user-wallets/user-wallets.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
-import { ScanModule } from './modules/scan/scan.module';
 import { WatcherModule } from './modules/watcher/watcher.module';
 import { SweepModule } from './modules/sweep/sweep.module';
 import { TronModule } from './modules/tron/tron.module';
@@ -38,9 +38,9 @@ import { TronModule } from './modules/tron/tron.module';
     AuthModule,
     AdminsModule,
     TronModule,
+    ContractsModule,
     UserWalletsModule,
     SweepModule,
-    ScanModule,
     TransactionsModule,
     WatcherModule,
   ],

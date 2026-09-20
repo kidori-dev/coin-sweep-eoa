@@ -2,6 +2,7 @@ import { Controller, Get, Query } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 
 import { SESSION_AUTH } from '../../swagger.setup';
+import { ContractsService } from '../contracts/contracts.service';
 import { TransactionResponseDto } from './dto/transaction.response.dto';
 import { TransactionType } from './entities/transaction.entity';
 import { TransactionsService } from './transactions.service';
@@ -10,7 +11,10 @@ import { TransactionsService } from './transactions.service';
 @ApiCookieAuth(SESSION_AUTH)
 @Controller('transactions')
 export class TransactionsController {
-  constructor(private readonly transactions: TransactionsService) {}
+  constructor(
+    private readonly transactions: TransactionsService,
+    private readonly contracts: ContractsService,
+  ) {}
 
   @Get()
   @ApiOperation({
@@ -21,15 +25,23 @@ export class TransactionsController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'userWalletId', required: false })
   @ApiQuery({ name: 'type', required: false, enum: TransactionType })
+  @ApiQuery({
+    name: 'contract',
+    required: false,
+    description: '컨트랙트 주소. 네이티브 TRX 는 "TRX"',
+  })
   @ApiOkResponse({ type: [TransactionResponseDto] })
-  findAll(
+  async findAll(
     @Query('limit') limit?: string,
     @Query('userWalletId') userWalletId?: string,
     @Query('type') type?: TransactionType,
+    @Query('contract') contract?: string,
   ): Promise<TransactionResponseDto[]> {
+    const resolved = contract ? await this.contracts.resolveOrFail(contract) : null;
     return this.transactions.findAll({
       limit: limit ? parseInt(limit, 10) : 50,
       userWalletId,
+      contractId: resolved?.id,
       type,
     });
   }

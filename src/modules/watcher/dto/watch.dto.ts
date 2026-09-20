@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsOptional } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsBoolean, IsInt, IsOptional, Max, Min } from 'class-validator';
 
 export class WatchRequestDto {
   @ApiPropertyOptional({
@@ -9,17 +10,40 @@ export class WatchRequestDto {
   @IsOptional()
   @IsBoolean()
   dryRun?: boolean;
+
+  @ApiPropertyOptional({
+    example: 500,
+    description: '이번 실행에서 훑을 최대 블록 수. 생략하면 SCAN_BLOCK_BATCH',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10000)
+  maxBlocks?: number;
 }
 
 export class WatchedDepositResponseDto {
-  @ApiProperty()
+  @ApiProperty({ description: '받은 우리 지갑 주소' })
   address!: string;
 
   @ApiProperty()
   txid!: string;
 
+  @ApiProperty({ example: 71106814 })
+  blockNumber!: number;
+
+  @ApiProperty({ description: '같은 트랜잭션 안에서 몇 번째 로그였는지' })
+  logIndex!: number;
+
+  @ApiProperty({ format: 'uuid', description: 'contract 테이블 참조' })
+  contractId!: string;
+
   @ApiProperty({ description: '토큰 컨트랙트 주소' })
   contract!: string;
+
+  @ApiProperty({ example: 'USDT' })
+  symbol!: string;
 
   @ApiProperty({ description: '보낸 주소' })
   from!: string;
@@ -36,62 +60,51 @@ export class WatchedDepositResponseDto {
   @ApiProperty({ format: 'date-time' })
   blockTimestamp!: Date;
 
-  @ApiProperty({ description: 'usdt_amount 에 반영되었는지. 이미 처리한 입금이면 false' })
-  applied!: boolean;
-
   @ApiProperty({
-    description: '확정 지연 버퍼 안쪽이라 이번엔 미뤘다. 다음 스캔에서 반영된다',
+    description: 'deposit_amount 에 반영되었는지. 이미 기록된 입금이면 false',
   })
-  pending!: boolean;
+  applied!: boolean;
 }
 
 export class WatchSummaryResponseDto {
   @ApiProperty()
   dryRun!: boolean;
 
-  @ApiProperty({ description: '감시 대상 컨트랙트 (USDT)' })
-  contract!: string;
+  @ApiProperty({ description: 'true 면 다른 스캔이 돌고 있어 이번엔 아무것도 하지 않았다' })
+  skipped!: boolean;
 
-  @ApiProperty({ example: 'USDT' })
-  symbol!: string;
+  @ApiProperty({
+    nullable: true,
+    type: Number,
+    description: '이번 실행이 훑은 첫 블록. null 이면 훑을 블록이 없었다',
+  })
+  fromBlock!: number | null;
 
-  @ApiProperty({ description: '검사한 지갑 수' })
-  scanned!: number;
+  @ApiProperty({ nullable: true, type: Number, description: '이번 실행이 훑은 마지막 블록' })
+  toBlock!: number | null;
+
+  @ApiProperty({ description: '확정(solidified)된 최신 블록' })
+  solidifiedBlock!: number;
+
+  @ApiProperty({
+    description: '아직 남은 블록 수. 0 이 아니면 다음 실행이 이어받는다. 계속 커지면 밀리는 중',
+  })
+  remainingBlocks!: number;
+
+  @ApiProperty({ description: '이번에 훑은 블록 수' })
+  blocksScanned!: number;
+
+  @ApiProperty({ type: [String], description: '스캔 대상 자산 심볼' })
+  contracts!: string[];
+
+  @ApiProperty({ description: '대조한 입금주소 수' })
+  wallets!: number;
 
   @ApiProperty({ description: '감지된 입금 건수' })
   found!: number;
 
-  @ApiProperty({ description: '잔고에 반영된 건수' })
+  @ApiProperty({ description: '잔고에 새로 반영된 건수' })
   applied!: number;
-
-  @ApiProperty({ description: '확정 지연 버퍼에 걸려 다음 스캔으로 미룬 건수' })
-  pending!: number;
-
-  @ApiProperty({
-    description: '조회에 실패한 지갑 수. 커서가 전진하지 않아 다음 스캔이 재시도한다',
-  })
-  failed!: number;
-
-  @ApiProperty({ description: '조회 limit 에 걸려 남은 구간이 있는 지갑 수' })
-  truncated!: number;
-
-  @ApiProperty({
-    nullable: true,
-    format: 'date-time',
-    type: String,
-    description: '이번 스캔이 훑은 구간의 시작 (커서 중 가장 뒤처진 것)',
-  })
-  windowFrom!: Date | null;
-
-  @ApiProperty({ format: 'date-time', description: '이번 스캔이 조회 완료로 간주한 경계' })
-  windowTo!: Date;
-
-  @ApiProperty({
-    nullable: true,
-    type: String,
-    description: 'scan_run 행 id. dryRun 이면 기록하지 않으므로 null',
-  })
-  runId!: string | null;
 
   @ApiProperty({ type: [WatchedDepositResponseDto] })
   deposits!: WatchedDepositResponseDto[];
